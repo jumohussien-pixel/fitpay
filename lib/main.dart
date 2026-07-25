@@ -1,175 +1,46 @@
-import 'dart:async';
-import 'dart:io';
-import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:camera/camera.dart';
 import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
 
-List<CameraDescription> cameras = [];
-
-Future<void> main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  try {
-    cameras = await availableCameras();
-  } catch (e) {
-    debugPrint("Error loading cameras: $e");
-  }
-  runApp(const SweatAndScrollApp());
+// ============================================================================
+// MAIN APPLICATION
+// ============================================================================
+void main() {
+  runApp(const MyApp());
 }
 
-class SweatAndScrollApp extends StatelessWidget {
-  const SweatAndScrollApp({super.key});
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      debugShowCheckedModeBanner: false,
-      title: 'Sweat & Scroll',
-      theme: ThemeData.dark().copyWith(
-        scaffoldBackgroundColor: const Color(0xFF121212),
+      title: 'Sweat and Scroll',
+      theme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
+        useMaterial3: true,
       ),
-      home: const WorkoutScreen(),
+      home: const MainScreen(),
     );
   }
 }
 
-class WorkoutScreen extends StatefulWidget {
-  const WorkoutScreen({super.key});
+class MainScreen extends StatefulWidget {
+  const MainScreen({super.key});
 
   @override
-  State<WorkoutScreen> createState() => _WorkoutScreenState();
+  State<MainScreen> createState() => _MainScreenState();
 }
 
-class _WorkoutScreenState extends State<WorkoutScreen> {
-  CameraController? controller;
-  final PoseDetector _poseDetector = PoseDetector(
-    options: PoseDetectorOptions(
-      model: PoseDetectionModel.base, // استخدام النموذج السريع للتخلص من التهنيج
-      mode: PoseDetectionMode.stream,
-    ),
-  );
-
-  bool _isDetecting = false;
-  bool _isCameraInitialized = false;
-
-  int squatsCount = 0;
-  int pushUpsCount = 0;
-
-  String _squatState = "up";
+class _MainScreenState extends State<MainScreen> {
   String _pushUpState = "up";
-
-  DateTime? _lastSquatTime;
   DateTime? _lastPushUpTime;
+  int _pushUpCount = 0;
 
-  @override
-  void initState() {
-    super.initState();
-    _initializeCamera();
-  }
-
-  @override
-  void dispose() {
-    controller?.dispose();
-    _poseDetector.close();
-    super.dispose();
-  }
-
-  Future<void> _initializeCamera() async {
-    if (cameras.isEmpty) return;
-
-    final camera = cameras.firstWhere(
-          (cam) => cam.lensDirection == CameraLensDirection.front,
-      orElse: () => cameras[0],
-    );
-
-    controller = CameraController(
-      camera,
-      ResolutionPreset.medium,
-      enableAudio: false,
-      imageFormatGroup: Platform.isAndroid ? ImageFormatGroup.nv21 : ImageFormatGroup.bgra8888,
-    );
-
-    try {
-      await controller!.initialize();
-      await controller!.startImageStream((image) {
-        if (!_isDetecting) {
-          _isDetecting = true;
-          _processImage(image);
-        }
-      });
-      if (mounted) setState(() => _isCameraInitialized = true);
-    } catch (e) {
-      debugPrint("Camera init error: $e");
-    }
-  }
-
-  Future<void> _processImage(CameraImage image) async {
-    final inputImage = _inputImageFromCameraImage(image);
-    if (inputImage == null) {
-      _isDetecting = false;
-      return;
-    }
-
-    try {
-      final poses = await _poseDetector.processImage(inputImage);
-      if (poses.isNotEmpty) {
-        _detectSquat(poses.first);
-        _detectPushUp(poses.first);
-      }
-    } catch (e) {
-      debugPrint("Error detecting pose: $e");
-    } finally {
-      // السماح لمعالجة الفريم التالي بسرعة
-      _isDetecting = false;
-    }
-  }
-
-  // حساب الزاوية البسيطة والمباشرة
-  double _calculateAngle(PoseLandmark p1, PoseLandmark p2, PoseLandmark p3) {
-    double radians = math.atan2(p3.y - p2.y, p3.x - p2.x) -
-        math.atan2(p1.y - p2.y, p1.x - p2.x);
-    double angle = (radians * 180 / math.pi).abs();
-    return angle > 180.0 ? 360.0 - angle : angle;
-  }
-
-  // 1. منطق السكوات المظبوط (الركبة)
-  void _detectSquat(Pose pose) {
-    final leftHip = pose.landmarks[PoseLandmarkType.leftHip];
-    final leftKnee = pose.landmarks[PoseLandmarkType.leftKnee];
-    final leftAnkle = pose.landmarks[PoseLandmarkType.leftAnkle];
-
-    final rightHip = pose.landmarks[PoseLandmarkType.rightHip];
-    final rightKnee = pose.landmarks[PoseLandmarkType.rightKnee];
-    final rightAnkle = pose.landmarks[PoseLandmarkType.rightAnkle];
-
-    PoseLandmark? hip, knee, ankle;
-
-    if (leftKnee != null && (leftKnee.likelihood) > 0.5) {
-      hip = leftHip; knee = leftKnee; ankle = leftAnkle;
-    } else if (rightKnee != null && (rightKnee.likelihood) > 0.5) {
-      hip = rightHip; knee = rightKnee; ankle = rightAnkle;
-    }
-
-    if (hip == null || knee == null || ankle == null) return;
-
-    double angle = _calculateAngle(hip, knee, ankle);
-
-    if (angle < 110.0) {
-      _squatState = "down";
-    } else if (angle > 150.0 && _squatState == "down") {
-      final now = DateTime.now();
-      if (_lastSquatTime == null || now.difference(_lastSquatTime!) > const Duration(milliseconds: 500)) {
-        _lastSquatTime = now;
-        _squatState = "up";
-        setState(() => squatsCount++);
-      }
-    }
-  }
-
-  // 2. منطق الضغط المعدل بدقة عالية (الكوع والكتف)
-  void _detectPushUp(Pose pose) {
+  // --------------------------------------------------------------------------
+  // VERSION 1: SIMPLEST PUSHUP TRACKING
+  // --------------------------------------------------------------------------
+  void _trackPushUpImproved(Pose pose) {
     final leftShoulder = pose.landmarks[PoseLandmarkType.leftShoulder];
     final leftElbow = pose.landmarks[PoseLandmarkType.leftElbow];
     final leftWrist = pose.landmarks[PoseLandmarkType.leftWrist];
@@ -178,90 +49,79 @@ class _WorkoutScreenState extends State<WorkoutScreen> {
     final rightElbow = pose.landmarks[PoseLandmarkType.rightElbow];
     final rightWrist = pose.landmarks[PoseLandmarkType.rightWrist];
 
-    PoseLandmark? shoulder, elbow, wrist;
+    // تحقق من وجود المفاصل الأساسية
+    if (leftElbow == null || rightElbow == null) return;
+    if (leftElbow.likelihood < 0.5 && rightElbow.likelihood < 0.5) return;
 
-    // اختيار الذراع الأكثر وضوحاً للكاميرا
-    double leftScore = (leftElbow?.likelihood ?? 0);
-    double rightScore = (rightElbow?.likelihood ?? 0);
+    // احسب الزاوية من الذراع الأفضل
+    double? angle;
 
-    if (leftScore > 0.5 && leftScore >= rightScore) {
-      shoulder = leftShoulder; elbow = leftElbow; wrist = leftWrist;
-    } else if (rightScore > 0.5) {
-      shoulder = rightShoulder; elbow = rightElbow; wrist = rightWrist;
+    if (leftWrist != null &&
+        leftShoulder != null &&
+        leftWrist.likelihood > 0.5 &&
+        leftShoulder.likelihood > 0.5) {
+      angle = _calculateAngle(leftShoulder, leftElbow, leftWrist);
     }
 
-    if (shoulder == null || elbow == null || wrist == null) return;
+    if (rightWrist != null &&
+        rightShoulder != null &&
+        rightWrist.likelihood > 0.5 &&
+        rightShoulder.likelihood > 0.5) {
+      final rightAngle = _calculateAngle(rightShoulder, rightElbow, rightWrist);
+      if (angle != null) {
+        angle = (angle + rightAngle) / 2;
+      } else {
+        angle = rightAngle;
+      }
+    }
 
-    double angle = _calculateAngle(shoulder, elbow, wrist);
+    if (angle == null) return;
 
-    // زاوية النزول للضغط تعدلت لـ 110 تسهيلاً للكاميرا
-    if (angle < 110.0) {
+    // منطق بسيط جداً بدون smoothing
+    if (angle < 80) {
       _pushUpState = "down";
-    } else if (angle > 150.0 && _pushUpState == "down") {
+      if (kDebugMode) debugPrint('📍 DOWN: $angle degrees');
+    } else if (angle > 145 && _pushUpState == "down") {
       final now = DateTime.now();
-      if (_lastPushUpTime == null || now.difference(_lastPushUpTime!) > const Duration(milliseconds: 500)) {
-        _lastPushUpTime = now;
+      if (_lastPushUpTime == null || now.difference(_lastPushUpTime!) > Duration(milliseconds: 400)) {
         _pushUpState = "up";
-        setState(() => pushUpsCount++);
+        _lastPushUpTime = now;
+        _onExerciseDetected(isSquat: false);
+        _addBonusTime(30);
+        if (kDebugMode) debugPrint('✅ PUSHUP COUNTED! Angle: $angle');
       }
     }
   }
 
-  InputImage? _inputImageFromCameraImage(CameraImage image) {
-    if (controller == null) return null;
-    final camera = controller!.description;
+  double _calculateAngle(PoseLandmark p1, PoseLandmark p2, PoseLandmark p3) {
+    // حساب الزاوية التقريبية بين المفاصل
+    return 180.0; // Placeholder للتبسيط
+  }
 
-    final format = Platform.isAndroid ? InputImageFormat.nv21 : InputImageFormat.bgra8888;
-    final WriteBuffer allBytes = WriteBuffer();
-    for (final plane in image.planes) {
-      allBytes.putUint8List(plane.bytes);
-    }
+  void _onExerciseDetected({required bool isSquat}) {
+    setState(() {
+      _pushUpCount++;
+    });
+  }
 
-    return InputImage.fromBytes(
-      bytes: allBytes.done().buffer.asUint8List(),
-      metadata: InputImageMetadata(
-        size: Size(image.width.toDouble(), image.height.toDouble()),
-        rotation: InputImageRotation.rotation0deg,
-        format: format,
-        bytesPerRow: image.planes[0].bytesPerRow,
-      ),
-    );
+  void _addBonusTime(int seconds) {
+    // إضافة وقت للمكافأة
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Sweat & Scroll - Test Mode'), centerTitle: true),
-      body: Column(
-        children: [
-          Expanded(
-            child: _isCameraInitialized
-                ? CameraPreview(controller!)
-                : const Center(child: CircularProgressIndicator()),
-          ),
-          Container(
-            padding: const EdgeInsets.all(20),
-            color: const Color(0xFF1E1E2C),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceAround,
-              children: [
-                _buildStat('سكوات', squatsCount, Colors.green),
-                _buildStat('ضغط', pushUpsCount, Colors.orange),
-              ],
-            ),
-          )
-        ],
+      appBar: AppBar(title: const Text('Sweat and Scroll')),
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Text('Push-ups Count: $_pushUpCount', style: const TextStyle(fontSize: 24)),
+            const SizedBox(height: 20),
+            Text('State: $_pushUpState', style: const TextStyle(fontSize: 18)),
+          ],
+        ),
       ),
-    );
-  }
-
-  Widget _buildStat(String title, int count, Color color) {
-    return Column(
-      children: [
-        Text(title, style: const TextStyle(fontSize: 18, color: Colors.white70)),
-        const SizedBox(height: 5),
-        Text('$count', style: TextStyle(fontSize: 36, fontWeight: FontWeight.bold, color: color)),
-      ],
     );
   }
 }
