@@ -1,49 +1,37 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
-import 'dart:typed_data';
-
-import 'package:camera/camera.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:camera/camera.dart';
 import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-// =============================================================================
-// THEME & CONSTANTS
-// =============================================================================
-
-abstract final class PushBlockColors {
-  static const Color background = Color(0xFF0F172A);
-  static const Color emerald = Color(0xFF10B981);
-  static const Color coral = Color(0xFFEF4444);
-  static const Color hudPanel = Color(0xCC0F172A);
-  static const Color border = Color(0x6610B981);
-  static const Color textMuted = Color(0xFF94A3B8);
-}
-
-abstract final class PushBlockConstants {
-  static const double downAngleThreshold = 90.0;
-  static const double upAngleThreshold = 160.0;
-  static const Duration calibrationDuration = Duration(seconds: 3);
-  static const Duration repDebounce = Duration(milliseconds: 450);
-  static const double landmarkLikelihoodMin = 0.5;
-  static const double symmetryToleranceDeg = 22.0;
-  static const double emaAlpha = 0.35;
-  static const int defaultSessionGoal = 10;
-  static const String sessionGoalKey = 'pushblock_session_goal';
-}
-
-enum ExercisePhase { calibrating, up, down, noPose }
-
-enum CameraPermissionStatus { unknown, granted, denied, error }
-
-// =============================================================================
-// ENTRY POINT
-// =============================================================================
+List<CameraDescription> cameras = [];
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  try {
+    cameras = await availableCameras();
+  } catch (e) {
+    debugPrint("خطأ في تحميل الكاميرات: $e");
+  }
   runApp(const PushBlockApp());
+}
+
+enum UserLevel { beginner, intermediate, advanced }
+
+class AppColors {
+  static const bg = Color(0xFF0F0F1A);
+  static const surface = Color(0xFF1A1A2E);
+  static const surfaceLight = Color(0xFF232340);
+  static const primary = Color(0xFF6C63FF);
+  static const primaryDark = Color(0xFF4B45B3);
+  static const neon = Color(0xFF00F0FF);
+  static const success = Color(0xFF00E676);
+  static const danger = Color(0xFFFF1744);
+  static const amber = Color(0xFFFFC107);
 }
 
 class PushBlockApp extends StatelessWidget {
@@ -52,1036 +40,589 @@ class PushBlockApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'PushBlock',
       debugShowCheckedModeBanner: false,
+      title: 'Sweat and Scroll',
       theme: ThemeData(
+        scaffoldBackgroundColor: AppColors.bg,
+        fontFamily: 'Cairo',
         brightness: Brightness.dark,
-        scaffoldBackgroundColor: PushBlockColors.background,
+        primaryColor: AppColors.primary,
         colorScheme: const ColorScheme.dark(
-          primary: PushBlockColors.emerald,
-          secondary: PushBlockColors.emerald,
-          error: PushBlockColors.coral,
-          surface: PushBlockColors.background,
+          primary: AppColors.primary,
+          secondary: AppColors.neon,
         ),
-        useMaterial3: true,
-        fontFamily: 'Roboto',
       ),
-      home: const PushBlockScreen(),
+      home: const MainScreen(),
     );
   }
 }
 
-// =============================================================================
-// BIOMECHANICS & SMOOTHING
-// =============================================================================
-
-class SmoothPoint {
-  double x;
-  double y;
-  double z;
-
-  SmoothPoint(this.x, this.y, this.z);
-}
-
-class LandmarkSmoother {
-  final Map<PoseLandmarkType, SmoothPoint> _cache = {};
-  final double alpha;
-
-  LandmarkSmoother({this.alpha = PushBlockConstants.emaAlpha});
-
-  void reset() => _cache.clear();
-
-  PoseLandmark? smooth(PoseLandmark? raw) {
-    if (raw == null) return null;
-    final cached = _cache[raw.type];
-    if (cached == null) {
-      _cache[raw.type] = SmoothPoint(raw.x, raw.y, raw.z);
-      return raw;
-    }
-    cached.x = alpha * raw.x + (1 - alpha) * cached.x;
-    cached.y = alpha * raw.y + (1 - alpha) * cached.y;
-    cached.z = alpha * raw.z + (1 - alpha) * cached.z;
-    return PoseLandmark(
-      type: raw.type,
-      x: cached.x,
-      y: cached.y,
-      z: cached.z,
-      likelihood: raw.likelihood,
-    );
-  }
-}
-
-double elbowAngle3D(PoseLandmark shoulder, PoseLandmark elbow, PoseLandmark wrist) {
-  final ax = shoulder.x - elbow.x;
-  final ay = shoulder.y - elbow.y;
-  final az = shoulder.z - elbow.z;
-  final bx = wrist.x - elbow.x;
-  final by = wrist.y - elbow.y;
-  final bz = wrist.z - elbow.z;
-
-  final dot = ax * bx + ay * by + az * bz;
-  final magA = math.sqrt(ax * ax + ay * ay + az * az);
-  final magB = math.sqrt(bx * bx + by * by + bz * bz);
-  if (magA == 0 || magB == 0) return 180.0;
-
-  final cosTheta = (dot / (magA * magB)).clamp(-1.0, 1.0);
-  return math.acos(cosTheta) * 180.0 / math.pi;
-}
-
-bool _landmarkUsable(PoseLandmark? landmark) {
-  return landmark != null &&
-      landmark.likelihood >= PushBlockConstants.landmarkLikelihoodMin;
-}
-
-// =============================================================================
-// REP COUNTING ENGINE
-// =============================================================================
-
-class PushUpRepEngine {
-  PushUpRepEngine();
-
-  final LandmarkSmoother _smoother = LandmarkSmoother();
-
-  ExercisePhase phase = ExercisePhase.calibrating;
-  int repCount = 0;
-  String feedback = 'Hold starting position — calibrating…';
-
-  DateTime? _calibrationStartedAt;
-  DateTime? _lastRepAt;
-  bool _validDownAchieved = false;
-  double _calibratedExtension = PushBlockConstants.upAngleThreshold;
-  final List<double> _calibrationSamples = [];
-
-  double get upThreshold =>
-      math.max(PushBlockConstants.upAngleThreshold, _calibratedExtension - 8.0);
-
-  void resetSession() {
-    _smoother.reset();
-    phase = ExercisePhase.calibrating;
-    repCount = 0;
-    feedback = 'Hold starting position — calibrating…';
-    _calibrationStartedAt = null;
-    _lastRepAt = null;
-    _validDownAchieved = false;
-    _calibratedExtension = PushBlockConstants.upAngleThreshold;
-    _calibrationSamples.clear();
-  }
-
-  void processPose(Pose pose) {
-    final leftShoulder = _smoother.smooth(pose.landmarks[PoseLandmarkType.leftShoulder]);
-    final leftElbow = _smoother.smooth(pose.landmarks[PoseLandmarkType.leftElbow]);
-    final leftWrist = _smoother.smooth(pose.landmarks[PoseLandmarkType.leftWrist]);
-    final rightShoulder = _smoother.smooth(pose.landmarks[PoseLandmarkType.rightShoulder]);
-    final rightElbow = _smoother.smooth(pose.landmarks[PoseLandmarkType.rightElbow]);
-    final rightWrist = _smoother.smooth(pose.landmarks[PoseLandmarkType.rightWrist]);
-
-    final leftReady = _landmarkUsable(leftShoulder) &&
-        _landmarkUsable(leftElbow) &&
-        _landmarkUsable(leftWrist);
-    final rightReady = _landmarkUsable(rightShoulder) &&
-        _landmarkUsable(rightElbow) &&
-        _landmarkUsable(rightWrist);
-
-    if (!leftReady && !rightReady) {
-      phase = ExercisePhase.noPose;
-      feedback = 'Step into frame — show your upper body';
-      return;
-    }
-
-    if (!leftReady || !rightReady) {
-      phase = ExercisePhase.noPose;
-      feedback = 'Both arms must stay visible';
-      return;
-    }
-
-    final leftAngle = elbowAngle3D(leftShoulder!, leftElbow!, leftWrist!);
-    final rightAngle = elbowAngle3D(rightShoulder!, rightElbow!, rightWrist!);
-    final avgAngle = (leftAngle + rightAngle) / 2.0;
-    final asymmetry = (leftAngle - rightAngle).abs();
-
-    _calibrationStartedAt ??= DateTime.now();
-    final calibrating = DateTime.now().difference(_calibrationStartedAt!) <
-        PushBlockConstants.calibrationDuration;
-
-    if (calibrating) {
-      phase = ExercisePhase.calibrating;
-      _calibrationSamples.add(avgAngle);
-      final remaining = PushBlockConstants.calibrationDuration -
-          DateTime.now().difference(_calibrationStartedAt!);
-      feedback =
-          'Calibrating… ${remaining.inSeconds + 1}s — hold extended plank';
-      return;
-    }
-
-    if (_calibrationSamples.isNotEmpty) {
-      _calibratedExtension = _calibrationSamples.reduce(math.max);
-    }
-
-    final bothDown = leftAngle < PushBlockConstants.downAngleThreshold &&
-        rightAngle < PushBlockConstants.downAngleThreshold;
-    final bothUp = leftAngle > upThreshold && rightAngle > upThreshold;
-
-    if (bothDown) {
-      if (asymmetry <= PushBlockConstants.symmetryToleranceDeg) {
-        if (phase != ExercisePhase.down) {
-          phase = ExercisePhase.down;
-          _validDownAchieved = true;
-          feedback = 'Good depth — push back up!';
-        }
-      } else {
-        phase = ExercisePhase.down;
-        _validDownAchieved = false;
-        feedback = 'Keep arms even — match depth on both sides';
-      }
-      return;
-    }
-
-    if (leftAngle < PushBlockConstants.downAngleThreshold ||
-        rightAngle < PushBlockConstants.downAngleThreshold) {
-      phase = ExercisePhase.up;
-      _validDownAchieved = false;
-      feedback = asymmetry > PushBlockConstants.symmetryToleranceDeg
-          ? 'Keep arms even'
-          : 'Go lower — both elbows below 90°';
-      return;
-    }
-
-    if (bothUp) {
-      if (phase == ExercisePhase.down && _validDownAchieved) {
-        final now = DateTime.now();
-        if (_lastRepAt == null ||
-            now.difference(_lastRepAt!) >= PushBlockConstants.repDebounce) {
-          repCount++;
-          _lastRepAt = now;
-          feedback = 'Good Rep!';
-        } else {
-          feedback = 'Push up fully!';
-        }
-      } else {
-        feedback = phase == ExercisePhase.down ? 'Push up fully!' : 'Ready — go down';
-      }
-      phase = ExercisePhase.up;
-      _validDownAchieved = false;
-      return;
-    }
-
-    phase = ExercisePhase.up;
-    feedback = 'Go lower';
-  }
-}
-
-// =============================================================================
-// CAMERA → ML KIT INPUT IMAGE
-// =============================================================================
-
-InputImageRotation _rotationFromCamera(CameraDescription camera) {
-  final sensorOrientation = camera.sensorOrientation;
-  if (Platform.isIOS) {
-    return InputImageRotationValue.fromRawValue(sensorOrientation) ??
-        InputImageRotation.rotation0deg;
-  }
-  switch (sensorOrientation) {
-    case 90:
-      return InputImageRotation.rotation90deg;
-    case 180:
-      return InputImageRotation.rotation180deg;
-    case 270:
-      return InputImageRotation.rotation270deg;
-    default:
-      return InputImageRotation.rotation0deg;
-  }
-}
-
-Uint8List _yuv420ToNv21(CameraImage image) {
-  final width = image.width;
-  final height = image.height;
-  final yPlane = image.planes[0];
-  final uPlane = image.planes[1];
-  final vPlane = image.planes[2];
-
-  final nv21 = Uint8List(width * height + (width * height ~/ 2));
-  var offset = 0;
-
-  for (var row = 0; row < height; row++) {
-    final rowStart = row * yPlane.bytesPerRow;
-    nv21.setRange(offset, offset + width, yPlane.bytes, rowStart);
-    offset += width;
-  }
-
-  final uvRowStride = uPlane.bytesPerRow;
-  final uvPixelStride = uPlane.bytesPerPixel ?? 1;
-
-  for (var row = 0; row < height ~/ 2; row++) {
-    for (var col = 0; col < width ~/ 2; col++) {
-      final uvIndex = row * uvRowStride + col * uvPixelStride;
-      nv21[offset++] = vPlane.bytes[uvIndex];
-      nv21[offset++] = uPlane.bytes[uvIndex];
-    }
-  }
-
-  return nv21;
-}
-
-InputImage? inputImageFromCameraImage(
-  CameraImage image,
-  CameraDescription camera,
-) {
-  final rotation = _rotationFromCamera(camera);
-  final format = InputImageFormatValue.fromRawValue(image.format.raw);
-
-  if (format == null) return null;
-
-  if (Platform.isAndroid) {
-    if (format == InputImageFormat.nv21) {
-      final plane = image.planes.first;
-      return InputImage.fromBytes(
-        bytes: plane.bytes,
-        metadata: InputImageMetadata(
-          size: Size(image.width.toDouble(), image.height.toDouble()),
-          rotation: rotation,
-          format: InputImageFormat.nv21,
-          bytesPerRow: plane.bytesPerRow,
-        ),
-      );
-    }
-
-    if (format == InputImageFormat.yuv420 ||
-        format == InputImageFormat.yuv_420_888) {
-      return InputImage.fromBytes(
-        bytes: _yuv420ToNv21(image),
-        metadata: InputImageMetadata(
-          size: Size(image.width.toDouble(), image.height.toDouble()),
-          rotation: rotation,
-          format: InputImageFormat.nv21,
-          bytesPerRow: image.width,
-        ),
-      );
-    }
-  }
-
-  if (Platform.isIOS && format == InputImageFormat.bgra8888) {
-    final plane = image.planes.first;
-    return InputImage.fromBytes(
-      bytes: plane.bytes,
-      metadata: InputImageMetadata(
-        size: Size(image.width.toDouble(), image.height.toDouble()),
-        rotation: rotation,
-        format: InputImageFormat.bgra8888,
-        bytesPerRow: plane.bytesPerRow,
-      ),
-    );
-  }
-
-  return null;
-}
-
-// =============================================================================
-// POSE SKELETON PAINTER
-// =============================================================================
-
-class PoseSkeletonPainter extends CustomPainter {
-  PoseSkeletonPainter({
-    required this.landmarks,
-    required this.imageSize,
-    required this.rotation,
-    required this.cameraLensDirection,
-  });
-
-  final Map<PoseLandmarkType, PoseLandmark> landmarks;
-  final Size imageSize;
-  final InputImageRotation rotation;
-  final CameraLensDirection cameraLensDirection;
-
-  static const _jointTypes = [
-    PoseLandmarkType.leftShoulder,
-    PoseLandmarkType.rightShoulder,
-    PoseLandmarkType.leftElbow,
-    PoseLandmarkType.rightElbow,
-    PoseLandmarkType.leftWrist,
-    PoseLandmarkType.rightWrist,
-  ];
-
-  static const _bones = [
-    (PoseLandmarkType.leftShoulder, PoseLandmarkType.leftElbow),
-    (PoseLandmarkType.leftElbow, PoseLandmarkType.leftWrist),
-    (PoseLandmarkType.rightShoulder, PoseLandmarkType.rightElbow),
-    (PoseLandmarkType.rightElbow, PoseLandmarkType.rightWrist),
-    (PoseLandmarkType.leftShoulder, PoseLandmarkType.rightShoulder),
-  ];
-
-  Offset _translate(double x, double y, Size canvasSize) {
-    double translatedX = x;
-    double translatedY = y;
-    double imageW = imageSize.width;
-    double imageH = imageSize.height;
-
-    switch (rotation) {
-      case InputImageRotation.rotation90deg:
-        translatedX = y;
-        translatedY = imageSize.height - x;
-        imageW = imageSize.height;
-        imageH = imageSize.width;
-        break;
-      case InputImageRotation.rotation180deg:
-        translatedX = imageSize.width - x;
-        translatedY = imageSize.height - y;
-        break;
-      case InputImageRotation.rotation270deg:
-        translatedX = imageSize.width - y;
-        translatedY = x;
-        imageW = imageSize.height;
-        imageH = imageSize.width;
-        break;
-      case InputImageRotation.rotation0deg:
-        break;
-    }
-
-    if (cameraLensDirection == CameraLensDirection.front) {
-      translatedX = imageW - translatedX;
-    }
-
-    final scaleX = canvasSize.width / imageW;
-    final scaleY = canvasSize.height / imageH;
-    final scale = math.max(scaleX, scaleY);
-
-    final offsetX = (canvasSize.width - imageW * scale) / 2;
-    final offsetY = (canvasSize.height - imageH * scale) / 2;
-
-    return Offset(
-      translatedX * scale + offsetX,
-      translatedY * scale + offsetY,
-    );
-  }
+class MainScreen extends StatefulWidget {
+  const MainScreen({super.key});
 
   @override
-  void paint(Canvas canvas, Size size) {
-    final bonePaint = Paint()
-      ..color = PushBlockColors.emerald.withOpacity( 0.85)
-      ..strokeWidth = 4
-      ..strokeCap = StrokeCap.round;
-
-    final jointPaint = Paint()
-      ..color = PushBlockColors.emerald
-      ..style = PaintingStyle.fill;
-
-    final glowPaint = Paint()
-      ..color = PushBlockColors.emerald.withOpacity( 0.25)
-      ..style = PaintingStyle.fill;
-
-    for (final (a, b) in _bones) {
-      final la = landmarks[a];
-      final lb = landmarks[b];
-      if (!_landmarkUsable(la) || !_landmarkUsable(lb)) continue;
-      canvas.drawLine(
-        _translate(la!.x, la.y, size),
-        _translate(lb!.x, lb.y, size),
-        bonePaint,
-      );
-    }
-
-    for (final type in _jointTypes) {
-      final lm = landmarks[type];
-      if (!_landmarkUsable(lm)) continue;
-      final center = _translate(lm!.x, lm.y, size);
-      canvas.drawCircle(center, 12, glowPaint);
-      canvas.drawCircle(center, 6, jointPaint);
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant PoseSkeletonPainter oldDelegate) {
-    return oldDelegate.landmarks != landmarks ||
-        oldDelegate.imageSize != imageSize ||
-        oldDelegate.rotation != rotation ||
-        oldDelegate.cameraLensDirection != cameraLensDirection;
-  }
+  State<MainScreen> createState() => _MainScreenState();
 }
 
-// =============================================================================
-// MAIN SCREEN
-// =============================================================================
+class _MainScreenState extends State<MainScreen>
+    with WidgetsBindingObserver, TickerProviderStateMixin {
+  
+  // وقفنا الاتصال بالـ Native مؤقتاً عشان نمنع الـ Crash
+  // static const platform = MethodChannel('com.example.sweat_and_scroll_app/overlay');
 
-class PushBlockScreen extends StatefulWidget {
-  const PushBlockScreen({super.key});
+  static const Map<DeviceOrientation, int> _orientations = {
+    DeviceOrientation.portraitUp: 0,
+    DeviceOrientation.landscapeLeft: 90,
+    DeviceOrientation.portraitDown: 180,
+    DeviceOrientation.landscapeRight: 270,
+  };
 
-  @override
-  State<PushBlockScreen> createState() => _PushBlockScreenState();
-}
+  static const double _minLikelihood = 0.55; 
+  static const Duration _repCooldown = Duration(milliseconds: 600); 
+  static const int _smoothingWindow = 4; 
 
-class _PushBlockScreenState extends State<PushBlockScreen>
-    with WidgetsBindingObserver {
-  CameraController? _cameraController;
-  List<CameraDescription> _cameras = [];
-  int _cameraIndex = 0;
+  CameraController? controller;
+  PoseDetector? _poseDetector;
 
-  late final PoseDetector _poseDetector;
-  final PushUpRepEngine _repEngine = PushUpRepEngine();
+  int points = 0;
+  UserLevel level = UserLevel.beginner;
+  int squatsCount = 0;
 
-  bool _isProcessing = false;
-  bool _isBusy = false;
-  CameraPermissionStatus _permissionStatus = CameraPermissionStatus.unknown;
+  bool _isDetecting = false;
+  bool _isCameraInitialized = false;
+  bool _isStreaming = false;
   String? _cameraError;
 
-  Map<PoseLandmarkType, PoseLandmark> _visibleLandmarks = {};
-  Size _imageSize = Size.zero;
-  InputImageRotation _imageRotation = InputImageRotation.rotation0deg;
+  String _squatState = "up";
+  DateTime? _lastSquatTime;
+  final List<double> _squatAngleBuffer = [];
 
-  int _sessionGoal = PushBlockConstants.defaultSessionGoal;
+  int _allowedScrollTime = 30; // بيبدأ بـ 30 ثانية للتجربة
+  final int _maxScrollTime = 300;
+  Timer? _scrollTimer;
+  bool _isAppBlocked = false;
+  bool _showSuccessFlash = false;
+
+  Pose? _latestPose;
+  Size? _imageSize; 
+  bool _isFrontCamera = true;
+
+  late final AnimationController _pulseController;
+  late final AnimationController _repController;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+
+    _pulseController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    )..repeat(reverse: true);
+
+    _repController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 350),
+      lowerBound: 0.9,
+      upperBound: 1.15,
+      value: 1.0,
+    );
+
     _poseDetector = PoseDetector(
       options: PoseDetectorOptions(
-        model: PoseDetectionModel.base,
+        model: PoseDetectionModel.accurate,
         mode: PoseDetectionMode.stream,
       ),
     );
-    unawaited(_bootstrap());
-  }
 
-  Future<void> _bootstrap() async {
-    await _loadSessionGoal();
-    await _initializeCamera();
-  }
-
-  Future<void> _loadSessionGoal() async {
-    final prefs = await SharedPreferences.getInstance();
-    if (!mounted) return;
-    setState(() {
-      _sessionGoal =
-          prefs.getInt(PushBlockConstants.sessionGoalKey) ??
-              PushBlockConstants.defaultSessionGoal;
-    });
-  }
-
-  Future<void> _initializeCamera() async {
-    setState(() {
-      _cameraError = null;
-      _permissionStatus = CameraPermissionStatus.unknown;
-    });
-
-    try {
-      _cameras = await availableCameras();
-      if (_cameras.isEmpty) {
-        setState(() {
-          _cameraError = 'No camera found on this device';
-          _permissionStatus = CameraPermissionStatus.error;
-        });
-        return;
-      }
-
-      if (_cameraIndex >= _cameras.length) _cameraIndex = 0;
-      await _startCamera(_cameras[_cameraIndex]);
-    } on CameraException catch (e) {
-      setState(() {
-        _cameraError = e.description ?? 'Camera unavailable';
-        _permissionStatus = e.code == 'CameraAccessDenied'
-            ? CameraPermissionStatus.denied
-            : CameraPermissionStatus.error;
-      });
-    } catch (e) {
-      setState(() {
-        _cameraError = e.toString();
-        _permissionStatus = CameraPermissionStatus.error;
-      });
-    }
-  }
-
-  Future<void> _startCamera(CameraDescription camera) async {
-    await _cameraController?.stopImageStream();
-    await _cameraController?.dispose();
-
-    final controller = CameraController(
-      camera,
-      ResolutionPreset.medium,
-      enableAudio: false,
-      imageFormatGroup: Platform.isAndroid
-          ? ImageFormatGroup.yuv420
-          : ImageFormatGroup.bgra8888,
-    );
-
-    await controller.initialize();
-    if (!mounted) {
-      await controller.dispose();
-      return;
-    }
-
-    _repEngine.resetSession();
-    _imageRotation = _rotationFromCamera(camera);
-
-    setState(() {
-      _cameraController = controller;
-      _permissionStatus = CameraPermissionStatus.granted;
-      _cameraError = null;
-    });
-
-    await controller.startImageStream(_onCameraFrame);
-  }
-
-  Future<void> _switchCamera() async {
-    if (_cameras.length < 2 || _isBusy) return;
-    _isBusy = true;
-    _cameraIndex = (_cameraIndex + 1) % _cameras.length;
-    try {
-      await _startCamera(_cameras[_cameraIndex]);
-    } finally {
-      _isBusy = false;
-    }
-  }
-
-  Future<void> _onCameraFrame(CameraImage image) async {
-    if (_isProcessing || !mounted) return;
-    final controller = _cameraController;
-    if (controller == null || !controller.value.isStreamingImages) return;
-
-    _isProcessing = true;
-    try {
-      final inputImage = inputImageFromCameraImage(image, controller.description);
-      if (inputImage == null) return;
-
-      _imageSize = inputImage.metadata?.size ?? Size.zero;
-      final poses = await _poseDetector.processImage(inputImage);
-      if (!mounted) return;
-
-      if (poses.isEmpty) {
-        _repEngine.phase = ExercisePhase.noPose;
-        _repEngine.feedback = 'Step into frame — show your upper body';
-        setState(() => _visibleLandmarks = {});
-        return;
-      }
-
-      final pose = poses.first;
-      _repEngine.processPose(pose);
-
-      setState(() {
-        _visibleLandmarks = Map.fromEntries(
-          pose.landmarks.entries.where(
-            (e) => _landmarkUsable(e.value),
-          ),
-        );
-      });
-    } catch (_) {
-      if (mounted) {
-        setState(() {
-          _cameraError = 'Pose processing failed';
-        });
-      }
-    } finally {
-      _isProcessing = false;
-    }
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    final controller = _cameraController;
-    if (controller == null || !controller.value.isInitialized) return;
-
-    if (state == AppLifecycleState.inactive ||
-        state == AppLifecycleState.paused) {
-      unawaited(controller.stopImageStream());
-    } else if (state == AppLifecycleState.resumed) {
-      unawaited(_initializeCamera());
-    }
+    _loadData();
+    _initializeCamera();
+    _startUsageLimitTimer();
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    unawaited(_cameraController?.stopImageStream());
-    unawaited(_cameraController?.dispose());
-    unawaited(_poseDetector.close());
+    _pulseController.dispose();
+    _repController.dispose();
+    _stopStreamSafely();
+    controller?.dispose();
+    _poseDetector?.close();
+    _scrollTimer?.cancel();
     super.dispose();
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final cam = controller;
+    if (cam == null || !cam.value.isInitialized) return;
+
+    if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.paused) {
+      _stopStreamSafely();
+    } else if (state == AppLifecycleState.resumed) {
+      if (_isCameraInitialized && !_isStreaming) {
+        _startStreamSafely();
+      }
+    }
+  }
+
+  void _startUsageLimitTimer() {
+    _scrollTimer?.cancel();
+    _scrollTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+      if (_allowedScrollTime > 0) {
+        setState(() => _allowedScrollTime--);
+      } else {
+        if (!_isAppBlocked) {
+          setState(() => _isAppBlocked = true);
+          // شيلنا دالة الكراش وبقينا بنعتمد على الـ UI المتحدث هنا
+        }
+      }
+    });
+  }
+
+  void _addBonusTime(int seconds) {
+    if (!mounted) return;
+    setState(() {
+      _allowedScrollTime =
+          (_allowedScrollTime + seconds).clamp(0, _maxScrollTime);
+      _isAppBlocked = false; // التطبيق هيفتح تاني بمجرد ما تعمل السكوات
+      _showSuccessFlash = true;
+    });
+
+    HapticFeedback.mediumImpact();
+    _repController.forward().then((_) {
+      if (mounted) _repController.reverse();
+    });
+
+    Future.delayed(const Duration(milliseconds: 500), () {
+      if (mounted) setState(() => _showSuccessFlash = false);
+    });
+  }
+
+  Future<void> _loadData() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (!mounted) return;
+      setState(() {
+        points = prefs.getInt('points') ?? 0;
+        squatsCount = prefs.getInt('squatsCount') ?? 0;
+        final savedLevel = prefs.getInt('level') ?? 0;
+        level = UserLevel.values[savedLevel.clamp(0, UserLevel.values.length - 1)];
+      });
+    } catch (e) {
+      debugPrint("فشل تحميل البيانات: $e");
+    }
+  }
+
+  Future<void> _saveData() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt('points', points);
+      await prefs.setInt('squatsCount', squatsCount);
+      await prefs.setInt('level', level.index);
+    } catch (e) {
+      debugPrint("فشل الحفظ: $e");
+    }
+  }
+
+  Future<void> _initializeCamera() async {
+    if (cameras.isEmpty) {
+      setState(() => _cameraError = "لم يتم العثور على كاميرا.");
+      return;
+    }
+    final camera = cameras.firstWhere(
+      (cam) => cam.lensDirection == CameraLensDirection.front,
+      orElse: () => cameras[0],
+    );
+    _isFrontCamera = camera.lensDirection == CameraLensDirection.front;
+
+    controller = CameraController(
+      camera,
+      ResolutionPreset.medium,
+      enableAudio: false,
+      imageFormatGroup: Platform.isAndroid ? ImageFormatGroup.nv21 : ImageFormatGroup.bgra8888,
+    );
+
+    try {
+      await controller!.initialize();
+      if (!mounted) return;
+      await _startStreamSafely();
+      setState(() {
+        _isCameraInitialized = true;
+        _cameraError = null;
+      });
+    } catch (e) {
+      setState(() => _cameraError = "تعذر تشغيل الكاميرا.");
+    }
+  }
+
+  Future<void> _startStreamSafely() async {
+    final cam = controller;
+    if (cam == null || !cam.value.isInitialized || _isStreaming) return;
+    try {
+      await cam.startImageStream((image) {
+        if (!_isDetecting) {
+          _isDetecting = true;
+          _processImage(image);
+        }
+      });
+      _isStreaming = true;
+    } catch (e) {
+      debugPrint("فشل بدء البث");
+    }
+  }
+
+  Future<void> _stopStreamSafely() async {
+    final cam = controller;
+    if (cam == null || !_isStreaming) return;
+    try {
+      if (cam.value.isStreamingImages) {
+        await cam.stopImageStream();
+      }
+    } catch (e) {
+      debugPrint("فشل إيقاف البث");
+    } finally {
+      _isStreaming = false;
+    }
+  }
+
+  Future<void> _processImage(CameraImage image) async {
+    final detector = _poseDetector;
+    if (detector == null) {
+      _isDetecting = false;
+      return;
+    }
+
+    final result = _inputImageFromCameraImage(image);
+    if (result == null) {
+      _isDetecting = false;
+      return;
+    }
+
+    try {
+      final poses = await detector.processImage(result.inputImage);
+      if (!mounted) return;
+      if (poses.isNotEmpty) {
+        _trackSquatImproved(poses.first);
+        setState(() {
+          _latestPose = poses.first;
+          _imageSize = result.adjustedSize;
+        });
+      }
+    } catch (e) {
+      // تجاهل أخطاء المعالجة
+    } finally {
+      _isDetecting = false;
+    }
+  }
+
+  double _calculateAngle(PoseLandmark first, PoseLandmark mid, PoseLandmark last) {
+    double radians = math.atan2(last.y - mid.y, last.x - mid.x) -
+        math.atan2(first.y - mid.y, first.x - mid.x);
+    double angle = (radians * 180 / math.pi).abs();
+    return angle > 180.0 ? 360.0 - angle : angle;
+  }
+
+  List<PoseLandmark>? _pickReliableSide(Pose pose, PoseLandmarkType leftA, PoseLandmarkType leftB, PoseLandmarkType leftC, PoseLandmarkType rightA, PoseLandmarkType rightB, PoseLandmarkType rightC) {
+    final left = [pose.landmarks[leftA], pose.landmarks[leftB], pose.landmarks[leftC]];
+    final right = [pose.landmarks[rightA], pose.landmarks[rightB], pose.landmarks[rightC]];
+
+    double scoreOf(List<PoseLandmark?> pts) {
+      if (pts.any((p) => p == null)) return -1;
+      return pts.map((p) => p!.likelihood).reduce(math.min);
+    }
+
+    final leftScore = scoreOf(left);
+    final rightScore = scoreOf(right);
+
+    if (leftScore < _minLikelihood && rightScore < _minLikelihood) return null;
+    final chosen = leftScore >= rightScore ? left : right;
+    return [chosen[0]!, chosen[1]!, chosen[2]!];
+  }
+
+  double _smooth(List<double> buffer, double newValue) {
+    buffer.add(newValue);
+    if (buffer.length > _smoothingWindow) buffer.removeAt(0);
+    return buffer.reduce((a, b) => a + b) / buffer.length;
+  }
+
+  void _trackSquatImproved(Pose pose) {
+    final side = _pickReliableSide(pose, PoseLandmarkType.leftHip, PoseLandmarkType.leftKnee, PoseLandmarkType.leftAnkle, PoseLandmarkType.rightHip, PoseLandmarkType.rightKnee, PoseLandmarkType.rightAnkle);
+    if (side == null) return;
+
+    final angle = _smooth(_squatAngleBuffer, _calculateAngle(side[0], side[1], side[2]));
+
+    if (angle < 100.0) {
+      _squatState = "down";
+    } else if (angle > 160.0 && _squatState == "down") {
+      final now = DateTime.now();
+      final canCount = _lastSquatTime == null || now.difference(_lastSquatTime!) > _repCooldown;
+      _squatState = "up";
+      if (canCount) {
+        _lastSquatTime = now;
+        _onSquatDetected();
+        _addBonusTime(30); // لو عملت عدة واحدة هيفك الحظر ويديك 30 ثانية
+      }
+    }
+  }
+
+  void _onSquatDetected() {
+    if (!mounted) return;
+    setState(() {
+      squatsCount++;
+      points += (level == UserLevel.beginner) ? 10 : (level == UserLevel.intermediate) ? 20 : 30;
+    });
+    _saveData();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    double progress = _allowedScrollTime / _maxScrollTime;
+    final isLow = _allowedScrollTime <= 10 && !_isAppBlocked;
+
     return Scaffold(
-      backgroundColor: PushBlockColors.background,
       body: Stack(
-        fit: StackFit.expand,
         children: [
-          _buildCameraLayer(),
-          _buildScanlineOverlay(),
-          _buildSkeletonOverlay(),
-          _buildTopBar(),
-          _buildBottomHud(),
-          if (_cameraError != null) _buildErrorOverlay(),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildCameraLayer() {
-    final controller = _cameraController;
-    if (controller == null || !controller.value.isInitialized) {
-      return Container(
-        color: PushBlockColors.background,
-        alignment: Alignment.center,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const CircularProgressIndicator(color: PushBlockColors.emerald),
-            const SizedBox(height: 16),
-            Text(
-              _permissionStatus == CameraPermissionStatus.denied
-                  ? 'Camera permission required'
-                  : 'Initializing camera…',
-              style: const TextStyle(color: PushBlockColors.textMuted),
-            ),
-          ],
-        ),
-      );
-    }
-
-    return FittedBox(
-      fit: BoxFit.cover,
-      child: SizedBox(
-        width: controller.value.previewSize?.height ?? 1,
-        height: controller.value.previewSize?.width ?? 1,
-        child: CameraPreview(controller),
-      ),
-    );
-  }
-
-  Widget _buildScanlineOverlay() {
-    return IgnorePointer(
-      child: Container(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [
-              PushBlockColors.background.withOpacity( 0.35),
-              Colors.transparent,
-              PushBlockColors.background.withOpacity( 0.55),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildSkeletonOverlay() {
-    if (_visibleLandmarks.isEmpty || _imageSize == Size.zero) {
-      return const SizedBox.shrink();
-    }
-
-    return CustomPaint(
-      painter: PoseSkeletonPainter(
-        landmarks: _visibleLandmarks,
-        imageSize: _imageSize,
-        rotation: _imageRotation,
-        cameraLensDirection:
-            _cameraController?.description.lensDirection ??
-                CameraLensDirection.front,
-      ),
-    );
-  }
-
-  Widget _buildTopBar() {
-    return SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-        child: Row(
-          children: [
-            _HudChip(
-              label: 'PushBlock',
-              icon: Icons.shield_outlined,
-              accent: PushBlockColors.emerald,
-            ),
-            const Spacer(),
-            _PermissionBadge(status: _permissionStatus),
-            const SizedBox(width: 8),
-            _IconHudButton(
-              icon: Icons.cameraswitch_rounded,
-              tooltip: 'Switch camera',
-              onPressed: _cameras.length > 1 ? _switchCamera : null,
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildBottomHud() {
-    final progress = (_repEngine.repCount / _sessionGoal).clamp(0.0, 1.0);
-    final phaseLabel = switch (_repEngine.phase) {
-      ExercisePhase.calibrating => 'CALIBRATING',
-      ExercisePhase.down => 'DOWN',
-      ExercisePhase.up => 'UP',
-      ExercisePhase.noPose => 'NO POSE',
-    };
-    final phaseColor = switch (_repEngine.phase) {
-      ExercisePhase.calibrating => PushBlockColors.textMuted,
-      ExercisePhase.down => PushBlockColors.coral,
-      ExercisePhase.up => PushBlockColors.emerald,
-      ExercisePhase.noPose => PushBlockColors.coral,
-    };
-
-    return Align(
-      alignment: Alignment.bottomCenter,
-      child: SafeArea(
-        child: Container(
-          width: double.infinity,
-          margin: const EdgeInsets.all(16),
-          padding: const EdgeInsets.fromLTRB(20, 18, 20, 16),
-          decoration: BoxDecoration(
-            color: PushBlockColors.hudPanel,
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(color: PushBlockColors.border, width: 1.2),
-            boxShadow: [
-              BoxShadow(
-                color: PushBlockColors.emerald.withOpacity( 0.12),
-                blurRadius: 24,
-                spreadRadius: 2,
+          Container(
+            decoration: const BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [AppColors.bg, Color(0xFF15152A)],
               ),
-            ],
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.end,
+            ),
+            child: SafeArea(
+              child: Column(
                 children: [
-                  Text(
-                    '${_repEngine.repCount}',
-                    style: const TextStyle(
-                      fontSize: 72,
-                      fontWeight: FontWeight.w800,
-                      height: 0.9,
-                      color: PushBlockColors.emerald,
-                      letterSpacing: -2,
-                    ),
-                  ),
-                  const Padding(
-                    padding: EdgeInsets.only(left: 8, bottom: 10),
-                    child: Text(
-                      'REPS',
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w700,
-                        color: PushBlockColors.textMuted,
-                        letterSpacing: 2,
-                      ),
-                    ),
-                  ),
-                  const Spacer(),
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      Text(
-                        phaseLabel,
-                        style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w800,
-                          letterSpacing: 1.6,
-                          color: phaseColor,
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        'Goal $_sessionGoal',
-                        style: const TextStyle(
-                          fontSize: 12,
-                          color: PushBlockColors.textMuted,
-                        ),
-                      ),
-                    ],
-                  ),
+                  _buildHeader(),
+                  _buildTimeCard(progress, isLow),
+                  const SizedBox(height: 16),
+                  Expanded(flex: 5, child: _buildCameraArea()),
+                  const SizedBox(height: 16),
+                  Expanded(flex: 4, child: _buildStatsPanel()),
                 ],
               ),
-              const SizedBox(height: 14),
-              ClipRRect(
-                borderRadius: BorderRadius.circular(999),
-                child: LinearProgressIndicator(
-                  value: progress,
-                  minHeight: 8,
-                  backgroundColor: PushBlockColors.background,
-                  valueColor: AlwaysStoppedAnimation<Color>(
-                    progress >= 1.0
-                        ? PushBlockColors.emerald
-                        : PushBlockColors.emerald.withOpacity( 0.85),
+            ),
+          ),
+          
+          // شاشة القفل الداخلية: هتظهر بس لما الوقت يخلص
+          if (_isAppBlocked)
+            Container(
+              color: Colors.black.withOpacity(0.85),
+              width: double.infinity,
+              height: double.infinity,
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(Icons.lock_clock_rounded, color: AppColors.danger, size: 100),
+                  const SizedBox(height: 20),
+                  const Text(
+                    'الوقت خلص!',
+                    style: TextStyle(color: Colors.white, fontSize: 32, fontWeight: FontWeight.bold),
                   ),
-                ),
+                  const SizedBox(height: 10),
+                  const Text(
+                    'اعمل سكوات دلوقتي عشان تفك القفل وتكمل.',
+                    style: TextStyle(color: Colors.white70, fontSize: 18),
+                  ),
+                  const SizedBox(height: 30),
+                  // الكاميرا مصغرة هنا عشان يشوف نفسه وهو بيعمل السكوات لفك القفل
+                  SizedBox(
+                    width: 150,
+                    height: 200,
+                    child: _buildCameraContent(),
+                  )
+                ],
               ),
-              const SizedBox(height: 12),
-              Text(
-                _repEngine.feedback,
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: 15,
-                  fontWeight: FontWeight.w600,
-                  color: _repEngine.feedback == 'Good Rep!'
-                      ? PushBlockColors.emerald
-                      : Colors.white,
-                ),
-              ),
-            ],
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildHeader() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 12, 20, 4),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          ShaderMask(
+            shaderCallback: (bounds) => const LinearGradient(
+              colors: [AppColors.neon, AppColors.primary],
+            ).createShader(bounds),
+            child: const Text(
+              'Sweat & Scroll',
+              style: TextStyle(fontWeight: FontWeight.w900, fontSize: 24, color: Colors.white),
+            ),
           ),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(color: AppColors.surfaceLight, borderRadius: BorderRadius.circular(20)),
+            child: Row(
+              children: [
+                const Icon(Icons.stars_rounded, color: AppColors.amber, size: 18),
+                const SizedBox(width: 4),
+                Text('$points', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTimeCard(double progress, bool isLow) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+      child: Container(
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.circular(24),
+          border: Border.all(color: (_isAppBlocked ? AppColors.danger : AppColors.primary).withOpacity(0.5), width: 1.5),
+        ),
+        child: Column(
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Row(
+                  children: [
+                    Icon(_isAppBlocked ? Icons.lock : Icons.timer, color: _isAppBlocked ? AppColors.danger : AppColors.amber),
+                    const SizedBox(width: 8),
+                    Text(_isAppBlocked ? 'مقفول' : 'الرصيد المتاح', style: const TextStyle(color: Colors.white70)),
+                  ],
+                ),
+                Text('$_allowedScrollTime ث', style: TextStyle(fontSize: 26, fontWeight: FontWeight.bold, color: _isAppBlocked ? AppColors.danger : Colors.white)),
+              ],
+            ),
+            const SizedBox(height: 14),
+            LinearProgressIndicator(
+              value: progress,
+              backgroundColor: Colors.white12,
+              valueColor: AlwaysStoppedAnimation<Color>(_isAppBlocked ? AppColors.danger : AppColors.success),
+            ),
+          ],
         ),
       ),
     );
   }
 
-  Widget _buildErrorOverlay() {
-    return Container(
-      color: PushBlockColors.background.withOpacity( 0.88),
+  Widget _buildCameraArea() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(28),
+        child: _buildCameraContent(),
+      ),
+    );
+  }
+
+  Widget _buildCameraContent() {
+    if (!_isCameraInitialized || controller == null) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    return Transform(
       alignment: Alignment.center,
-      padding: const EdgeInsets.all(24),
+      transform: _isFrontCamera ? Matrix4.rotationY(math.pi) : Matrix4.identity(),
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          CameraPreview(controller!),
+          if (_latestPose != null && _imageSize != null)
+            CustomPaint(painter: NeonSkeletonPainter(_latestPose!, _imageSize!)),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStatsPanel() {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: const BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.only(topLeft: Radius.circular(36), topRight: Radius.circular(36)),
+      ),
       child: Column(
-        mainAxisSize: MainAxisSize.min,
         children: [
-          const Icon(Icons.videocam_off_rounded,
-              color: PushBlockColors.coral, size: 48),
-          const SizedBox(height: 16),
-          Text(
-            _cameraError ?? 'Camera error',
-            textAlign: TextAlign.center,
-            style: const TextStyle(color: Colors.white, fontSize: 16),
-          ),
-          const SizedBox(height: 20),
-          FilledButton.icon(
-            onPressed: _initializeCamera,
-            icon: const Icon(Icons.refresh_rounded),
-            label: const Text('Retry'),
-            style: FilledButton.styleFrom(
-              backgroundColor: PushBlockColors.emerald,
-              foregroundColor: PushBlockColors.background,
-            ),
-          ),
+          Text('إجمالي السكوات: $squatsCount', style: const TextStyle(fontSize: 22, color: Colors.white)),
         ],
       ),
     );
   }
-}
 
-// =============================================================================
-// HUD WIDGETS
-// =============================================================================
+  _InputImageResult? _inputImageFromCameraImage(CameraImage image) {
+    final cam = controller;
+    if (cam == null) return null;
+    final camera = cam.description;
 
-class _HudChip extends StatelessWidget {
-  const _HudChip({
-    required this.label,
-    required this.icon,
-    required this.accent,
-  });
+    InputImageRotation? rotation;
+    if (Platform.isAndroid) {
+      var rotationCompensation = _orientations[cam.value.deviceOrientation];
+      if (rotationCompensation == null) return null;
+      if (camera.lensDirection == CameraLensDirection.front) {
+        rotationCompensation = (camera.sensorOrientation + rotationCompensation) % 360;
+      } else {
+        rotationCompensation = (camera.sensorOrientation - rotationCompensation + 360) % 360;
+      }
+      rotation = InputImageRotationValue.fromRawValue(rotationCompensation);
+    }
+    if (rotation == null) return null;
 
-  final String label;
-  final IconData icon;
-  final Color accent;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-      decoration: BoxDecoration(
-        color: PushBlockColors.hudPanel,
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: accent.withOpacity( 0.45)),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 18, color: accent),
-          const SizedBox(width: 8),
-          Text(
-            label,
-            style: TextStyle(
-              color: accent,
-              fontWeight: FontWeight.w800,
-              letterSpacing: 0.8,
-            ),
-          ),
-        ],
-      ),
+    final format = Platform.isAndroid ? InputImageFormat.nv21 : InputImageFormat.bgra8888;
+    final WriteBuffer allBytes = WriteBuffer();
+    for (final plane in image.planes) { allBytes.putUint8List(plane.bytes); }
+    final bytes = allBytes.done().buffer.asUint8List();
+    final rawSize = Size(image.width.toDouble(), image.height.toDouble());
+    final inputImage = InputImage.fromBytes(
+      bytes: bytes,
+      metadata: InputImageMetadata(size: rawSize, rotation: rotation, format: format, bytesPerRow: image.planes[0].bytesPerRow),
     );
+    final isRotated = rotation == InputImageRotation.rotation90deg || rotation == InputImageRotation.rotation270deg;
+    return _InputImageResult(inputImage: inputImage, adjustedSize: isRotated ? Size(rawSize.height, rawSize.width) : rawSize);
   }
 }
 
-class _PermissionBadge extends StatelessWidget {
-  const _PermissionBadge({required this.status});
-
-  final CameraPermissionStatus status;
-
-  @override
-  Widget build(BuildContext context) {
-    final (label, color, icon) = switch (status) {
-      CameraPermissionStatus.granted => (
-          'LIVE',
-          PushBlockColors.emerald,
-          Icons.fiber_manual_record_rounded,
-        ),
-      CameraPermissionStatus.denied => (
-          'DENIED',
-          PushBlockColors.coral,
-          Icons.block_rounded,
-        ),
-      CameraPermissionStatus.error => (
-          'ERROR',
-          PushBlockColors.coral,
-          Icons.error_outline_rounded,
-        ),
-      CameraPermissionStatus.unknown => (
-          'INIT',
-          PushBlockColors.textMuted,
-          Icons.hourglass_empty_rounded,
-        ),
-    };
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      decoration: BoxDecoration(
-        color: PushBlockColors.hudPanel,
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: color.withOpacity( 0.5)),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 12, color: color),
-          const SizedBox(width: 6),
-          Text(
-            label,
-            style: TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w800,
-              letterSpacing: 1.2,
-              color: color,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
+class _InputImageResult {
+  final InputImage inputImage;
+  final Size adjustedSize;
+  const _InputImageResult({required this.inputImage, required this.adjustedSize});
 }
 
-class _IconHudButton extends StatelessWidget {
-  const _IconHudButton({
-    required this.icon,
-    required this.tooltip,
-    required this.onPressed,
-  });
+class NeonSkeletonPainter extends CustomPainter {
+  final Pose pose;
+  final Size imageSize;
 
-  final IconData icon;
-  final String tooltip;
-  final VoidCallback? onPressed;
+  NeonSkeletonPainter(this.pose, this.imageSize);
 
   @override
-  Widget build(BuildContext context) {
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: PushBlockColors.hudPanel,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: PushBlockColors.border),
-      ),
-      child: IconButton(
-        tooltip: tooltip,
-        onPressed: onPressed,
-        icon: Icon(icon, color: PushBlockColors.emerald),
-      ),
-    );
+  void paint(Canvas canvas, Size size) {
+    if (imageSize.width == 0 || imageSize.height == 0) return;
+    final paint = Paint()..color = const Color(0xff00f0ff)..strokeWidth = 4.0..style = PaintingStyle.stroke;
+    final scaleX = size.width / imageSize.width;
+    final scaleY = size.height / imageSize.height;
+
+    Offset scalePoint(PoseLandmark landmark) => Offset(landmark.x * scaleX, landmark.y * scaleY);
+
+    void drawLine(PoseLandmarkType t1, PoseLandmarkType t2) {
+      final lm1 = pose.landmarks[t1];
+      final lm2 = pose.landmarks[t2];
+      if (lm1 != null && lm2 != null && lm1.likelihood > 0.5 && lm2.likelihood > 0.5) {
+        canvas.drawLine(scalePoint(lm1), scalePoint(lm2), paint);
+      }
+    }
+    
+    drawLine(PoseLandmarkType.leftHip, PoseLandmarkType.leftKnee);
+    drawLine(PoseLandmarkType.leftKnee, PoseLandmarkType.leftAnkle);
+    drawLine(PoseLandmarkType.rightHip, PoseLandmarkType.rightKnee);
+    drawLine(PoseLandmarkType.rightKnee, PoseLandmarkType.rightAnkle);
   }
+
+  @override
+  bool shouldRepaint(covariant NeonSkeletonPainter oldDelegate) => oldDelegate.pose != pose;
 }
