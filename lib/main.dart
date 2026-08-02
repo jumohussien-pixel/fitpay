@@ -158,7 +158,6 @@ class _MainScreenState extends State<MainScreen>
   StreamSubscription<AccelerometerEvent>? _accelSub;
   int _stepCount = 0;
   double _lastMagnitude = 0;
-  bool _isWalking = false;
 
   @override
   void initState() {
@@ -169,6 +168,7 @@ class _MainScreenState extends State<MainScreen>
       vsync: this,
       duration: const Duration(milliseconds: 900),
     )..repeat(reverse: true);
+
     _repController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 350),
@@ -307,12 +307,10 @@ class _MainScreenState extends State<MainScreen>
       squatsCount = prefs.getInt('squatsCount') ?? 0;
       final savedLevel = prefs.getInt('level') ?? 0;
       level = UserLevel.values[savedLevel.clamp(0, UserLevel.values.length - 1)];
-      _allowedScrollTime =
-          prefs.getInt('scroll_time') ?? 120;
+      _allowedScrollTime = prefs.getInt('scroll_time') ?? 120;
       _streak = prefs.getInt('streak') ?? 0;
       _lastWorkoutDate = prefs.getString('last_workout_date') ?? '';
-      _dailyTargetScrollMinutes =
-          prefs.getInt('daily_target_minutes') ?? 30;
+      _dailyTargetScrollMinutes = prefs.getInt('daily_target_minutes') ?? 30;
       _dailyScreenHours = prefs.getDouble('daily_screen_hours') ?? 6.0;
       _selectedMotivation =
           prefs.getString('motivation') ?? 'Reduce screen time';
@@ -344,7 +342,7 @@ class _MainScreenState extends State<MainScreen>
     await prefs.setInt('workout_mode', _workoutMode.index);
     await prefs.setBool('onboarding_done', _onboardingComplete);
     for (final entry in _appsToBlock.entries) {
-      await prefs.setBool('block_${entry.key}', entry.value['blocked']);
+      await prefs.setBool('block_${entry.key}', entry.value['blocked'] as bool);
     }
   }
 
@@ -355,7 +353,7 @@ class _MainScreenState extends State<MainScreen>
       return;
     }
     final camera = cameras.firstWhere(
-      (cam) => cam.lensDirection == CameraLensDirection.front,
+          (cam) => cam.lensDirection == CameraLensDirection.front,
       orElse: () => cameras[0],
     );
     _isFrontCamera = camera.lensDirection == CameraLensDirection.front;
@@ -364,7 +362,7 @@ class _MainScreenState extends State<MainScreen>
       ResolutionPreset.medium,
       enableAudio: false,
       imageFormatGroup:
-          Platform.isAndroid ? ImageFormatGroup.nv21 : ImageFormatGroup.bgra8888,
+      Platform.isAndroid ? ImageFormatGroup.nv21 : ImageFormatGroup.bgra8888,
     );
     try {
       await controller!.initialize();
@@ -376,7 +374,7 @@ class _MainScreenState extends State<MainScreen>
       });
     } on CameraException catch (e) {
       setState(() =>
-          _cameraError = "Camera error: ${e.description ?? e.code}");
+      _cameraError = "Camera error: ${e.description ?? e.code}");
     } catch (_) {
       setState(() => _cameraError = "Camera error.");
     }
@@ -436,7 +434,7 @@ class _MainScreenState extends State<MainScreen>
     }
   }
 
-  // ---------- Squat Detection (PRESERVED) ----------
+  // ---------- Squat Detection ----------
   double _calculateAngle(
       PoseLandmark first, PoseLandmark mid, PoseLandmark last) {
     double radians = math.atan2(last.y - mid.y, last.x - mid.x) -
@@ -446,14 +444,14 @@ class _MainScreenState extends State<MainScreen>
   }
 
   List<PoseLandmark>? _pickReliableSide(
-    Pose pose,
-    PoseLandmarkType leftA,
-    PoseLandmarkType leftB,
-    PoseLandmarkType leftC,
-    PoseLandmarkType rightA,
-    PoseLandmarkType rightB,
-    PoseLandmarkType rightC,
-  ) {
+      Pose pose,
+      PoseLandmarkType leftA,
+      PoseLandmarkType leftB,
+      PoseLandmarkType leftC,
+      PoseLandmarkType rightA,
+      PoseLandmarkType rightB,
+      PoseLandmarkType rightC,
+      ) {
     final left = [
       pose.landmarks[leftA],
       pose.landmarks[leftB],
@@ -494,7 +492,7 @@ class _MainScreenState extends State<MainScreen>
     );
     if (side == null) return;
     final angle =
-        _smooth(_squatAngleBuffer, _calculateAngle(side[0], side[1], side[2]));
+    _smooth(_squatAngleBuffer, _calculateAngle(side[0], side[1], side[2]));
     if (angle < 100.0) {
       _squatState = "down";
     } else if (angle > 160.0 && _squatState == "down") {
@@ -517,8 +515,8 @@ class _MainScreenState extends State<MainScreen>
       points += (level == UserLevel.beginner)
           ? 10
           : (level == UserLevel.intermediate)
-              ? 20
-              : 30;
+          ? 20
+          : 30;
     });
     _updateStreak();
     _saveData();
@@ -526,26 +524,23 @@ class _MainScreenState extends State<MainScreen>
 
   // ---------- Pedometer for Walking Mode ----------
   void _startPedometer() {
-    _accelSub = accelerometerEvents.listen((AccelerometerEvent event) {
+    _accelSub = accelerometerEventStream().listen((AccelerometerEvent event) {
       final magnitude = math.sqrt(
           event.x * event.x + event.y * event.y + event.z * event.z);
       final delta = magnitude - _lastMagnitude;
       _lastMagnitude = magnitude;
       if (delta > 15) {
-        // step threshold
         _stepCount++;
-        // reward for walking: same logic as squat
         if (_workoutMode != WorkoutMode.squatsOnly) {
           setState(() {
             points += (level == UserLevel.beginner)
                 ? 5
                 : (level == UserLevel.intermediate)
-                    ? 10
-                    : 15;
+                ? 10
+                : 15;
           });
           _updateStreak();
           _saveData();
-          // add bonus time every 10 steps
           if (_stepCount % 10 == 0) {
             _addBonusTime(10);
           }
@@ -619,7 +614,7 @@ class _MainScreenState extends State<MainScreen>
         ],
       ),
       bottomNavigationBar: Container(
-        decoration: BoxDecoration(
+        decoration: const BoxDecoration(
           border: Border(
             top: BorderSide(color: BoltColors.border, width: 1),
           ),
@@ -698,9 +693,8 @@ class _MainScreenState extends State<MainScreen>
           ),
           Row(
             children: [
-              // Streak fire
               if (_streak > 0) ...[
-                Icon(Icons.local_fire_department_rounded,
+                const Icon(Icons.local_fire_department_rounded,
                     color: BoltColors.warning, size: 20),
                 Text('$_streak',
                     style: const TextStyle(
@@ -709,7 +703,7 @@ class _MainScreenState extends State<MainScreen>
               ],
               Container(
                 padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                 decoration: BoxDecoration(
                   color: BoltColors.surfaceLight,
                   borderRadius: BorderRadius.circular(20),
@@ -783,7 +777,7 @@ class _MainScreenState extends State<MainScreen>
                               ? 'Time’s up! Exercise to unlock'
                               : 'Scroll Credits',
                           style:
-                              const TextStyle(color: Colors.white70, fontSize: 14),
+                          const TextStyle(color: Colors.white70, fontSize: 14),
                         ),
                       ],
                     ),
@@ -804,7 +798,7 @@ class _MainScreenState extends State<MainScreen>
                   borderRadius: BorderRadius.circular(15),
                   child: TweenAnimationBuilder<double>(
                     tween:
-                        Tween(begin: 0, end: progress.clamp(0.0, 1.0)),
+                    Tween(begin: 0, end: progress.clamp(0.0, 1.0)),
                     duration: const Duration(milliseconds: 400),
                     builder: (context, value, _) => LinearProgressIndicator(
                       value: value,
@@ -942,7 +936,7 @@ class _MainScreenState extends State<MainScreen>
             children: [
               const Text('Level: ',
                   style:
-                      TextStyle(color: Colors.white54, fontSize: 13)),
+                  TextStyle(color: Colors.white54, fontSize: 13)),
               Container(
                 padding: const EdgeInsets.all(4),
                 decoration: BoxDecoration(
@@ -979,7 +973,7 @@ class _MainScreenState extends State<MainScreen>
           const SizedBox(height: 4),
           Text(title,
               style:
-                  const TextStyle(color: Colors.white70, fontSize: 12)),
+              const TextStyle(color: Colors.white70, fontSize: 12)),
           Text('$value',
               style: TextStyle(
                   color: color, fontSize: 24, fontWeight: FontWeight.w900)),
@@ -1008,7 +1002,7 @@ class _MainScreenState extends State<MainScreen>
       shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(12)),
       padding:
-          const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
     );
   }
 
@@ -1028,7 +1022,7 @@ class _MainScreenState extends State<MainScreen>
                       fontWeight: FontWeight.bold,
                       color: Colors.white)),
               const SizedBox(height: 8),
-              Text(
+              const Text(
                 'Block distracting apps when scroll credits run out.',
                 style: TextStyle(color: Colors.white60, fontSize: 14),
               ),
@@ -1097,7 +1091,6 @@ class _MainScreenState extends State<MainScreen>
                       fontWeight: FontWeight.bold,
                       color: Colors.white)),
               const SizedBox(height: 20),
-              // Redeem points
               Text('Your Points: $points',
                   style: const TextStyle(
                       color: BoltColors.warning,
@@ -1108,13 +1101,12 @@ class _MainScreenState extends State<MainScreen>
                   style: TextStyle(
                       color: Colors.white, fontSize: 18)),
               const SizedBox(height: 12),
-              _redeemCard(500, 5), // 500 pts = 5 min
+              _redeemCard(500, 5),
               const SizedBox(height: 10),
-              _redeemCard(1000, 12), // 1000 pts = 12 min
+              _redeemCard(1000, 12),
               const SizedBox(height: 10),
-              _redeemCard(2000, 30), // 2000 pts = 30 min
+              _redeemCard(2000, 30),
               const SizedBox(height: 30),
-              // Pro subscription
               Container(
                 padding: const EdgeInsets.all(20),
                 decoration: BoxDecoration(
@@ -1147,7 +1139,7 @@ class _MainScreenState extends State<MainScreen>
                         'Unlimited blocks, leaderboards, zero ads',
                         textAlign: TextAlign.center,
                         style:
-                            TextStyle(color: Colors.white70, fontSize: 14)),
+                        TextStyle(color: Colors.white70, fontSize: 14)),
                     const SizedBox(height: 20),
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceEvenly,
@@ -1169,7 +1161,6 @@ class _MainScreenState extends State<MainScreen>
                               borderRadius: BorderRadius.circular(16)),
                         ),
                         onPressed: () {
-                          // Simulate starting trial
                           _showErrorSnackBar(
                               '7-Day Free Trial activated (mock)');
                         },
@@ -1209,19 +1200,19 @@ class _MainScreenState extends State<MainScreen>
         trailing: ElevatedButton(
           style: ElevatedButton.styleFrom(
             backgroundColor:
-                canAfford ? BoltColors.neon : Colors.white12,
+            canAfford ? BoltColors.neon : Colors.white12,
             foregroundColor: canAfford ? Colors.black : Colors.white38,
             shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(12)),
           ),
           onPressed: canAfford
               ? () {
-                  setState(() {
-                    points -= pointsCost;
-                    _allowedScrollTime += minutes * 60;
-                    _saveData();
-                  });
-                }
+            setState(() {
+              points -= pointsCost;
+              _allowedScrollTime += minutes * 60;
+              _saveData();
+            });
+          }
               : null,
           child: const Text('Redeem'),
         ),
@@ -1234,7 +1225,7 @@ class _MainScreenState extends State<MainScreen>
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       decoration: BoxDecoration(
-        color: bestValue ? BoltColors.neon.withOpacity(0.1) : Colors.white5,
+        color: bestValue ? BoltColors.neon.withOpacity(0.1) : Colors.white10,
         borderRadius: BorderRadius.circular(16),
         border: bestValue
             ? Border.all(color: BoltColors.neon, width: 1.5)
@@ -1245,7 +1236,7 @@ class _MainScreenState extends State<MainScreen>
           if (bestValue)
             Container(
               padding:
-                  const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+              const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
               margin: const EdgeInsets.only(bottom: 6),
               decoration: BoxDecoration(
                 color: BoltColors.neon,
@@ -1288,7 +1279,6 @@ class _MainScreenState extends State<MainScreen>
                       fontWeight: FontWeight.bold,
                       color: Colors.white)),
               const SizedBox(height: 20),
-              // Reality Check
               Container(
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
@@ -1321,16 +1311,14 @@ class _MainScreenState extends State<MainScreen>
                 ),
               ),
               const SizedBox(height: 24),
-              // Progress charts (mock)
               _buildProgressCard('Today', Icons.today_rounded,
-                  '${squatsCount} squats, ${_stepCount} steps'),
+                  '$squatsCount squats, $_stepCount steps'),
               _buildProgressCard('This Week', Icons.calendar_view_week_rounded,
-                  '${(squatsCount * 7)} squats (est), ${(_stepCount * 7)} steps'),
+                  '${squatsCount * 7} squats (est), ${_stepCount * 7} steps'),
               _buildProgressCard('Saved Time',
                   Icons.access_time_rounded,
-                  '${(_allowedScrollTime ~/ 60)} minutes'),
+                  '${_allowedScrollTime ~/ 60} minutes'),
               const SizedBox(height: 24),
-              // Squad leaderboard (mock)
               const Text('Squad Leaderboard',
                   style: TextStyle(
                       color: Colors.white,
@@ -1341,7 +1329,6 @@ class _MainScreenState extends State<MainScreen>
               _leaderboardTile('2', 'FitFighter92', 8500),
               _leaderboardTile('3', 'SquatQueen', 7200),
               const SizedBox(height: 30),
-              // Admin Panel trigger
               GestureDetector(
                 onTap: _handleAdminTap,
                 child: Container(
@@ -1431,7 +1418,6 @@ class _MainScreenState extends State<MainScreen>
             _saveData();
           }),
           _adminAction('Toggle Pro Status', Icons.diamond, () {
-            // mock Pro toggle
             _showErrorSnackBar("Pro status toggled (mock)");
           }),
           const SizedBox(height: 12),
@@ -1457,8 +1443,7 @@ class _MainScreenState extends State<MainScreen>
     );
   }
 
-  // ---------- Onboarding Flow ----------
-  // The _inputImageFromCameraImage helper (preserved)
+  // ---------- Image Helper ----------
   _InputImageResult? _inputImageFromCameraImage(CameraImage image) {
     final cam = controller;
     if (cam == null) return null;
@@ -1469,7 +1454,7 @@ class _MainScreenState extends State<MainScreen>
       rotation = InputImageRotationValue.fromRawValue(camera.sensorOrientation);
     } else if (Platform.isAndroid) {
       var rotationCompensation =
-          _orientations[cam.value.deviceOrientation];
+      _orientations[cam.value.deviceOrientation];
       if (rotationCompensation == null) return null;
       if (camera.lensDirection == CameraLensDirection.front) {
         rotationCompensation =
@@ -1503,7 +1488,7 @@ class _MainScreenState extends State<MainScreen>
     final isRotated90or270 = rotation == InputImageRotation.rotation90deg ||
         rotation == InputImageRotation.rotation270deg;
     final adjustedSize =
-        isRotated90or270 ? Size(rawSize.height, rawSize.width) : rawSize;
+    isRotated90or270 ? Size(rawSize.height, rawSize.width) : rawSize;
     return _InputImageResult(
         inputImage: inputImage, adjustedSize: adjustedSize);
   }
@@ -1530,7 +1515,6 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
   final PageController _pageController = PageController();
   int _currentStep = 0;
 
-  // answers
   double _screenHours = 6.0;
   int _targetMinutes = 30;
   String _motivation = 'Reduce screen time';
@@ -1554,7 +1538,6 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
       body: SafeArea(
         child: Column(
           children: [
-            // progress dots
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
               child: Row(
@@ -1581,7 +1564,12 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
                 physics: const NeverScrollableScrollPhysics(),
                 onPageChanged: (i) => setState(() => _currentStep = i),
                 children: [
-                  _step1(), _step2(), _step3(), _step4(), _step5(), _step6(),
+                  _step1(),
+                  _step2(),
+                  _step3(),
+                  _step4(),
+                  _step5(),
+                  _step6(),
                 ],
               ),
             ),
@@ -1688,19 +1676,18 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
           const SizedBox(height: 12),
           ...['Reduce screen time', 'Lose weight', 'Build strength', 'Stay active']
               .map((m) => ChoiceChip(
-                    label: Text(m),
-                    selected: _motivation == m,
-                    onSelected: (_) => setState(() => _motivation = m),
-                    selectedColor: BoltColors.neon.withOpacity(0.2),
-                    backgroundColor: BoltColors.surface,
-                    labelStyle: TextStyle(
-                        color: _motivation == m
-                            ? BoltColors.neon
-                            : Colors.white70),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12)),
-                  ))
-              .toList(),
+            label: Text(m),
+            selected: _motivation == m,
+            onSelected: (_) => setState(() => _motivation = m),
+            selectedColor: BoltColors.neon.withOpacity(0.2),
+            backgroundColor: BoltColors.surface,
+            labelStyle: TextStyle(
+                color: _motivation == m
+                    ? BoltColors.neon
+                    : Colors.white70),
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12)),
+          )),
         ],
       ),
     );
@@ -1718,20 +1705,19 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
               .asMap()
               .entries
               .map((e) => ChoiceChip(
-                    label: Text(e.value),
-                    selected: _mode.index == e.key,
-                    onSelected: (_) =>
-                        setState(() => _mode = WorkoutMode.values[e.key]),
-                    selectedColor: BoltColors.neon.withOpacity(0.2),
-                    backgroundColor: BoltColors.surface,
-                    labelStyle: TextStyle(
-                        color: _mode.index == e.key
-                            ? BoltColors.neon
-                            : Colors.white70),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12)),
-                  ))
-              .toList(),
+            label: Text(e.value),
+            selected: _mode.index == e.key,
+            onSelected: (_) =>
+                setState(() => _mode = WorkoutMode.values[e.key]),
+            selectedColor: BoltColors.neon.withOpacity(0.2),
+            backgroundColor: BoltColors.surface,
+            labelStyle: TextStyle(
+                color: _mode.index == e.key
+                    ? BoltColors.neon
+                    : Colors.white70),
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12)),
+          )),
         ],
       ),
     );
@@ -1745,23 +1731,21 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
           const Text('Choose your capacity:',
               style: TextStyle(color: Colors.white70, fontSize: 16)),
           const SizedBox(height: 12),
-          ...UserLevel.values
-              .map((l) => ChoiceChip(
-                    label: Text(l == UserLevel.beginner
-                        ? 'Beginner (50m/10 squats = 1 min)'
-                        : l == UserLevel.intermediate
-                            ? 'Intermediate (75m/15 squats = 1 min)'
-                            : 'Beast Mode (100m/20 squats = 1 min)'),
-                    selected: _level == l,
-                    onSelected: (_) => setState(() => _level = l),
-                    selectedColor: BoltColors.neon.withOpacity(0.2),
-                    backgroundColor: BoltColors.surface,
-                    labelStyle: TextStyle(
-                        color: _level == l ? BoltColors.neon : Colors.white70),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12)),
-                  ))
-              .toList(),
+          ...UserLevel.values.map((l) => ChoiceChip(
+            label: Text(l == UserLevel.beginner
+                ? 'Beginner (50m/10 squats = 1 min)'
+                : l == UserLevel.intermediate
+                ? 'Intermediate (75m/15 squats = 1 min)'
+                : 'Beast Mode (100m/20 squats = 1 min)'),
+            selected: _level == l,
+            onSelected: (_) => setState(() => _level = l),
+            selectedColor: BoltColors.neon.withOpacity(0.2),
+            backgroundColor: BoltColors.surface,
+            labelStyle: TextStyle(
+                color: _level == l ? BoltColors.neon : Colors.white70),
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12)),
+          )),
         ],
       ),
     );
@@ -1777,17 +1761,16 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
           const SizedBox(height: 12),
           ...['Social Media', 'Friend', 'App Store', 'Other']
               .map((s) => ChoiceChip(
-                    label: Text(s),
-                    selected: _source == s,
-                    onSelected: (_) => setState(() => _source = s),
-                    selectedColor: BoltColors.neon.withOpacity(0.2),
-                    backgroundColor: BoltColors.surface,
-                    labelStyle: TextStyle(
-                        color: _source == s ? BoltColors.neon : Colors.white70),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12)),
-                  ))
-              .toList(),
+            label: Text(s),
+            selected: _source == s,
+            onSelected: (_) => setState(() => _source = s),
+            selectedColor: BoltColors.neon.withOpacity(0.2),
+            backgroundColor: BoltColors.surface,
+            labelStyle: TextStyle(
+                color: _source == s ? BoltColors.neon : Colors.white70),
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12)),
+          )),
         ],
       ),
     );
@@ -1823,10 +1806,11 @@ class OnboardingStep extends StatelessWidget {
 class _InputImageResult {
   final InputImage inputImage;
   final Size adjustedSize;
-  const _InputImageResult({required this.inputImage, required this.adjustedSize});
+  const _InputImageResult(
+      {required this.inputImage, required this.adjustedSize});
 }
 
-// Neon skeleton painter (unchanged logic, adapted colors)
+// Neon skeleton painter
 class NeonSkeletonPainter extends CustomPainter {
   final Pose pose;
   final Size imageSize;
@@ -1863,8 +1847,9 @@ class NeonSkeletonPainter extends CustomPainter {
 
     Offset? getPoint(PoseLandmarkType type) {
       final landmark = pose.landmarks[type];
-      if (landmark == null || landmark.likelihood < _minLikelihoodToDraw)
+      if (landmark == null || landmark.likelihood < _minLikelihoodToDraw) {
         return null;
+      }
       return Offset(landmark.x * scaleX, landmark.y * scaleY);
     }
 
