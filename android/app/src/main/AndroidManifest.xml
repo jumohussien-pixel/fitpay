@@ -6,7 +6,7 @@
     <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" tools:ignore="ProtectedPermissions" />
 
     <application
-        android:label="sweat_and_scroll_app"
+        android:label="fitpay"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity
