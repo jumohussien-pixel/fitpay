@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:camera/camera.dart';
 import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:sensors_plus/sensors_plus.dart';
 
 List<CameraDescription> cameras = [];
 
@@ -15,25 +16,32 @@ Future<void> main() async {
   try {
     cameras = await availableCameras();
   } catch (e) {
-    debugPrint("خطأ في تحميل الكاميرات: $e");
+    debugPrint("Camera init error: $e");
   }
   runApp(const FitPayApp());
 }
 
-enum UserLevel { beginner, intermediate, advanced }
-
-class AppColors {
-  static const bg = Color(0xFF0F0F1A);
-  static const surface = Color(0xFF1A1A2E);
-  static const surfaceLight = Color(0xFF232340);
-  static const primary = Color(0xFF6C63FF);
-  static const primaryDark = Color(0xFF4B45B3);
-  static const neon = Color(0xFF00F0FF);
-  static const success = Color(0xFF00E676);
-  static const danger = Color(0xFFFF1744);
-  static const amber = Color(0xFFFFC107);
+// --------------- Bolt Aesthetic Colors ---------------
+class BoltColors {
+  static const Color bg = Color(0xFF0D0D12);
+  static const Color surface = Color(0xFF161620);
+  static const Color surfaceLight = Color(0xFF1F1F2E);
+  static const Color neon = Color(0xFF00F0FF);
+  static const Color success = Color(0xFF00E676);
+  static const Color danger = Color(0xFFFF1744);
+  static const Color warning = Color(0xFFFFC107);
+  static const Color textPrimary = Colors.white;
+  static const Color textSecondary = Color(0xFFB0B0C0);
+  static const Color border = Color(0x14FFFFFF); // 8% white
 }
 
+// --------------- User Level Enum ---------------
+enum UserLevel { beginner, intermediate, advanced }
+
+// --------------- Workout Preference ---------------
+enum WorkoutMode { walkingOnly, squatsOnly, both }
+
+// --------------- App ---------------
 class FitPayApp extends StatelessWidget {
   const FitPayApp({super.key});
 
@@ -43,13 +51,20 @@ class FitPayApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       title: 'Fitpay',
       theme: ThemeData(
-        scaffoldBackgroundColor: AppColors.bg,
-        fontFamily: 'Cairo',
+        scaffoldBackgroundColor: BoltColors.bg,
         brightness: Brightness.dark,
-        primaryColor: AppColors.primary,
+        primaryColor: BoltColors.neon,
         colorScheme: const ColorScheme.dark(
-          primary: AppColors.primary,
-          secondary: AppColors.neon,
+          primary: BoltColors.neon,
+          secondary: BoltColors.neon,
+          surface: BoltColors.surface,
+        ),
+        fontFamily: 'Roboto',
+        bottomNavigationBarTheme: const BottomNavigationBarThemeData(
+          backgroundColor: BoltColors.surface,
+          selectedItemColor: BoltColors.neon,
+          unselectedItemColor: BoltColors.textSecondary,
+          type: BottomNavigationBarType.fixed,
         ),
       ),
       home: const MainScreen(),
@@ -57,6 +72,7 @@ class FitPayApp extends StatelessWidget {
   }
 }
 
+// --------------- Main Screen with Bottom Navigation & State ---------------
 class MainScreen extends StatefulWidget {
   const MainScreen({super.key});
 
@@ -68,54 +84,81 @@ class _MainScreenState extends State<MainScreen>
     with WidgetsBindingObserver, TickerProviderStateMixin {
   static const platform = MethodChannel('com.fitpay.app/overlay');
 
-  static const Map<DeviceOrientation, int> _orientations = {
-    DeviceOrientation.portraitUp: 0,
-    DeviceOrientation.landscapeLeft: 90,
-    DeviceOrientation.portraitDown: 180,
-    DeviceOrientation.landscapeRight: 270,
-  };
-
-  static const double _minLikelihood = 0.55;
-  static const Duration _repCooldown = Duration(milliseconds: 500);
-  static const int _smoothingWindow = 4;
-
+  // ---------- Camera & ML Kit ----------
   CameraController? controller;
   PoseDetector? _poseDetector;
-
-  int points = 0;
-  UserLevel level = UserLevel.beginner;
-  int squatsCount = 0;
-
   bool _isDetecting = false;
   bool _isCameraInitialized = false;
   bool _isStreaming = false;
   String? _cameraError;
-
-  String _squatState = "up";
-  DateTime? _lastSquatTime;
-  final List<double> _squatAngleBuffer = [];
-
-  int _allowedScrollTime = 30;
-  final int _maxScrollTime = 300;
-  Timer? _scrollTimer;
-  bool _isAppBlocked = false;
-  bool _showSuccessFlash = false;
-  bool _isBlockingServiceEnabled = false;
-
-  // القائمة الخاصة بالتطبيقات المحظورة
-  final Map<String, Map<String, dynamic>> _appsToBlock = {
-    'com.zhiliaoapp.musically': {'name': 'تيك توك', 'blocked': true, 'icon': Icons.video_library_rounded},
-    'com.instagram.android': {'name': 'إنستجرام', 'blocked': true, 'icon': Icons.camera_alt_rounded},
-    'com.google.android.youtube': {'name': 'يوتيوب Shorts', 'blocked': false, 'icon': Icons.play_circle_fill_rounded},
-    'com.facebook.katana': {'name': 'فيسبوك Reels', 'blocked': false, 'icon': Icons.facebook_rounded},
-  };
-
   Pose? _latestPose;
   Size? _imageSize;
   bool _isFrontCamera = true;
 
+  // ---------- Exercise State ----------
+  int points = 0;
+  int squatsCount = 0;
+  UserLevel level = UserLevel.beginner;
+  String _squatState = "up";
+  DateTime? _lastSquatTime;
+  final List<double> _squatAngleBuffer = [];
+
+  // ---------- Timer & Blocking ----------
+  int _allowedScrollTime = 120; // default 2 minutes
+  final int _maxScrollTime = 600;
+  Timer? _scrollTimer;
+  bool _isAppBlocked = false;
+  bool _showSuccessFlash = false;
+
+  // ---------- App Blocking ----------
+  bool _isBlockingServiceEnabled = false;
+  final Map<String, Map<String, dynamic>> _appsToBlock = {
+    'com.zhiliaoapp.musically': {
+      'name': 'TikTok',
+      'blocked': true,
+      'icon': Icons.video_library_rounded
+    },
+    'com.instagram.android': {
+      'name': 'Instagram',
+      'blocked': true,
+      'icon': Icons.camera_alt_rounded
+    },
+    'com.google.android.youtube': {
+      'name': 'YouTube Shorts',
+      'blocked': false,
+      'icon': Icons.play_circle_fill_rounded
+    },
+    'com.facebook.katana': {
+      'name': 'Facebook Reels',
+      'blocked': false,
+      'icon': Icons.facebook_rounded
+    },
+  };
+
+  // ---------- Gamification & Streak ----------
+  int _streak = 0;
+  String _lastWorkoutDate = '';
+  String _selectedMotivation = 'Reduce screen time';
+  WorkoutMode _workoutMode = WorkoutMode.both;
+  int _dailyTargetScrollMinutes = 30;
+  double _dailyScreenHours = 6.0;
+
+  // ---------- Onboarding ----------
+  bool _onboardingComplete = false;
+
+  // ---------- Admin ----------
+  bool _isAdminVisible = false;
+  int _adminTapCount = 0;
+
+  // ---------- Animations ----------
   late final AnimationController _pulseController;
   late final AnimationController _repController;
+
+  // ---------- Pedometer for walking mode ----------
+  StreamSubscription<AccelerometerEvent>? _accelSub;
+  int _stepCount = 0;
+  double _lastMagnitude = 0;
+  bool _isWalking = false;
 
   @override
   void initState() {
@@ -126,7 +169,6 @@ class _MainScreenState extends State<MainScreen>
       vsync: this,
       duration: const Duration(milliseconds: 900),
     )..repeat(reverse: true);
-
     _repController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 350),
@@ -143,9 +185,10 @@ class _MainScreenState extends State<MainScreen>
     );
 
     _loadData();
-    _checkAndRequestPermissions();
+    _checkPermissions();
     _initializeCamera();
     _startUsageLimitTimer();
+    _startPedometer();
   }
 
   @override
@@ -157,6 +200,7 @@ class _MainScreenState extends State<MainScreen>
     controller?.dispose();
     _poseDetector?.close();
     _scrollTimer?.cancel();
+    _accelSub?.cancel();
     super.dispose();
   }
 
@@ -164,42 +208,35 @@ class _MainScreenState extends State<MainScreen>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     final cam = controller;
     if (cam == null || !cam.value.isInitialized) return;
-
     if (state == AppLifecycleState.inactive ||
         state == AppLifecycleState.paused) {
       _stopStreamSafely();
     } else if (state == AppLifecycleState.resumed) {
-      if (_isAppBlocked) {
-        _forceCloseBackgroundApps();
-      }
-      if (_isCameraInitialized && !_isStreaming) {
-        _startStreamSafely();
-      }
+      if (_isAppBlocked) _forceCloseBackgroundApps();
+      if (_isCameraInitialized && !_isStreaming) _startStreamSafely();
     }
   }
 
-  Future<void> _checkAndRequestPermissions() async {
+  // ---------- Permissions ----------
+  Future<void> _checkPermissions() async {
     try {
-      final bool hasPermission = await platform.invokeMethod('checkPermissions') ?? false;
-      setState(() {
-        _isBlockingServiceEnabled = hasPermission;
-      });
-    } on PlatformException catch (e) {
-      debugPrint("مشكلة في التحقق من الصلاحيات: ${e.message}");
-    } on MissingPluginException {
-      debugPrint("قناة الحظر غير متصلة بالـ Native حالياً.");
-    }
+      final bool hasPermission =
+          await platform.invokeMethod('checkPermissions') ?? false;
+      setState(() => _isBlockingServiceEnabled = hasPermission);
+    } catch (_) {}
   }
 
   Future<void> _requestBlockingPermission() async {
     try {
       await platform.invokeMethod('requestPermissions');
-      _checkAndRequestPermissions();
+      _checkPermissions();
     } catch (e) {
-      _showErrorSnackBar("إفتح إعدادات الجهاز لمنح صلاحية الحجب والظهور فوق التطبيقات.");
+      _showErrorSnackBar(
+          "Open device settings to grant overlay and usage access.");
     }
   }
 
+  // ---------- Timer ----------
   void _startUsageLimitTimer() {
     _scrollTimer?.cancel();
     _scrollTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
@@ -218,19 +255,15 @@ class _MainScreenState extends State<MainScreen>
     });
   }
 
+  // ---------- Blocking ----------
   Future<void> _forceCloseBackgroundApps() async {
     try {
       final blockedPackages = _appsToBlock.entries
           .where((e) => e.value['blocked'] == true)
           .map((e) => e.key)
           .toList();
-      
       await platform.invokeMethod('blockApps', {'packages': blockedPackages});
-    } on PlatformException catch (e) {
-      debugPrint("فشل حظر التطبيقات: ${e.message}");
-    } on MissingPluginException {
-      debugPrint("تنبيه: ميزة الحظر تعمل فور ربط كود Android الـ Native.");
-    }
+    } catch (_) {}
   }
 
   void _addBonusTime(int seconds) {
@@ -241,19 +274,15 @@ class _MainScreenState extends State<MainScreen>
       _isAppBlocked = false;
       _showSuccessFlash = true;
     });
-
     HapticFeedback.mediumImpact();
     _repController.forward().then((_) {
       if (mounted) _repController.reverse();
     });
-
     Future.delayed(const Duration(milliseconds: 500), () {
       if (mounted) setState(() => _showSuccessFlash = false);
     });
-
     try {
       platform.invokeMethod('unblockScreen');
-    } on MissingPluginException {
     } catch (_) {}
   }
 
@@ -262,52 +291,67 @@ class _MainScreenState extends State<MainScreen>
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(message),
-        backgroundColor: AppColors.danger,
+        backgroundColor: BoltColors.danger,
         behavior: SnackBarBehavior.floating,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       ),
     );
   }
 
+  // ---------- Data Persistence ----------
   Future<void> _loadData() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      if (!mounted) return;
-      setState(() {
-        points = prefs.getInt('points') ?? 0;
-        squatsCount = prefs.getInt('squatsCount') ?? 0;
-        final savedLevel = prefs.getInt('level') ?? 0;
-        level = UserLevel.values[savedLevel.clamp(0, UserLevel.values.length - 1)];
+    final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
+    setState(() {
+      points = prefs.getInt('points') ?? 0;
+      squatsCount = prefs.getInt('squatsCount') ?? 0;
+      final savedLevel = prefs.getInt('level') ?? 0;
+      level = UserLevel.values[savedLevel.clamp(0, UserLevel.values.length - 1)];
+      _allowedScrollTime =
+          prefs.getInt('scroll_time') ?? 120;
+      _streak = prefs.getInt('streak') ?? 0;
+      _lastWorkoutDate = prefs.getString('last_workout_date') ?? '';
+      _dailyTargetScrollMinutes =
+          prefs.getInt('daily_target_minutes') ?? 30;
+      _dailyScreenHours = prefs.getDouble('daily_screen_hours') ?? 6.0;
+      _selectedMotivation =
+          prefs.getString('motivation') ?? 'Reduce screen time';
+      final modeIdx = prefs.getInt('workout_mode') ?? 2;
+      _workoutMode = WorkoutMode.values[modeIdx.clamp(0, 2)];
+      _onboardingComplete = prefs.getBool('onboarding_done') ?? false;
 
-        _appsToBlock.forEach((key, value) {
-          if (prefs.containsKey('block_$key')) {
-            value['blocked'] = prefs.getBool('block_$key') ?? true;
-          }
-        });
-      });
-    } catch (e) {
-      debugPrint("فشل تحميل البيانات: $e");
-    }
+      // apps block state
+      for (final entry in _appsToBlock.entries) {
+        final key = 'block_${entry.key}';
+        if (prefs.containsKey(key)) {
+          entry.value['blocked'] = prefs.getBool(key) ?? true;
+        }
+      }
+    });
   }
 
   Future<void> _saveData() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setInt('points', points);
-      await prefs.setInt('squatsCount', squatsCount);
-      await prefs.setInt('level', level.index);
-
-      _appsToBlock.forEach((key, value) {
-        prefs.setBool('block_$key', value['blocked']);
-      });
-    } catch (e) {
-      debugPrint("فشل حفظ البيانات: $e");
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt('points', points);
+    await prefs.setInt('squatsCount', squatsCount);
+    await prefs.setInt('level', level.index);
+    await prefs.setInt('scroll_time', _allowedScrollTime);
+    await prefs.setInt('streak', _streak);
+    await prefs.setString('last_workout_date', _lastWorkoutDate);
+    await prefs.setInt('daily_target_minutes', _dailyTargetScrollMinutes);
+    await prefs.setDouble('daily_screen_hours', _dailyScreenHours);
+    await prefs.setString('motivation', _selectedMotivation);
+    await prefs.setInt('workout_mode', _workoutMode.index);
+    await prefs.setBool('onboarding_done', _onboardingComplete);
+    for (final entry in _appsToBlock.entries) {
+      await prefs.setBool('block_${entry.key}', entry.value['blocked']);
     }
   }
 
+  // ---------- Camera & ML Kit ----------
   Future<void> _initializeCamera() async {
     if (cameras.isEmpty) {
-      setState(() => _cameraError = "لم يتم العثور على كاميرا في الجهاز.");
+      setState(() => _cameraError = "No camera found.");
       return;
     }
     final camera = cameras.firstWhere(
@@ -315,7 +359,6 @@ class _MainScreenState extends State<MainScreen>
       orElse: () => cameras[0],
     );
     _isFrontCamera = camera.lensDirection == CameraLensDirection.front;
-
     controller = CameraController(
       camera,
       ResolutionPreset.medium,
@@ -323,7 +366,6 @@ class _MainScreenState extends State<MainScreen>
       imageFormatGroup:
           Platform.isAndroid ? ImageFormatGroup.nv21 : ImageFormatGroup.bgra8888,
     );
-
     try {
       await controller!.initialize();
       if (!mounted) return;
@@ -333,9 +375,10 @@ class _MainScreenState extends State<MainScreen>
         _cameraError = null;
       });
     } on CameraException catch (e) {
-      setState(() => _cameraError = "تعذر تشغيل الكاميرا: ${e.description ?? e.code}");
-    } catch (e) {
-      setState(() => _cameraError = "خطأ في الكاميرا.");
+      setState(() =>
+          _cameraError = "Camera error: ${e.description ?? e.code}");
+    } catch (_) {
+      setState(() => _cameraError = "Camera error.");
     }
   }
 
@@ -351,7 +394,7 @@ class _MainScreenState extends State<MainScreen>
       });
       _isStreaming = true;
     } catch (e) {
-      debugPrint("فشل بث الصور: $e");
+      debugPrint("Stream failed: $e");
     }
   }
 
@@ -359,12 +402,8 @@ class _MainScreenState extends State<MainScreen>
     final cam = controller;
     if (cam == null || !_isStreaming) return;
     try {
-      if (cam.value.isStreamingImages) {
-        await cam.stopImageStream();
-      }
-    } catch (e) {
-      debugPrint("إيقاف البث: $e");
-    } finally {
+      if (cam.value.isStreamingImages) await cam.stopImageStream();
+    } catch (_) {} finally {
       _isStreaming = false;
     }
   }
@@ -375,13 +414,11 @@ class _MainScreenState extends State<MainScreen>
       _isDetecting = false;
       return;
     }
-
     final result = _inputImageFromCameraImage(image);
     if (result == null) {
       _isDetecting = false;
       return;
     }
-
     try {
       final poses = await detector.processImage(result.inputImage);
       if (!mounted) return;
@@ -392,18 +429,16 @@ class _MainScreenState extends State<MainScreen>
           _imageSize = result.adjustedSize;
         });
       } else {
-        if (_latestPose != null) {
-          setState(() => _latestPose = null);
-        }
+        if (_latestPose != null) setState(() => _latestPose = null);
       }
-    } catch (e) {
-      if (kDebugMode) debugPrint("خطأ معالجة الإطار: $e");
-    } finally {
+    } catch (_) {} finally {
       _isDetecting = false;
     }
   }
 
-  double _calculateAngle(PoseLandmark first, PoseLandmark mid, PoseLandmark last) {
+  // ---------- Squat Detection (PRESERVED) ----------
+  double _calculateAngle(
+      PoseLandmark first, PoseLandmark mid, PoseLandmark last) {
     double radians = math.atan2(last.y - mid.y, last.x - mid.x) -
         math.atan2(first.y - mid.y, first.x - mid.x);
     double angle = (radians * 180 / math.pi).abs();
@@ -412,12 +447,23 @@ class _MainScreenState extends State<MainScreen>
 
   List<PoseLandmark>? _pickReliableSide(
     Pose pose,
-    PoseLandmarkType leftA, PoseLandmarkType leftB, PoseLandmarkType leftC,
-    PoseLandmarkType rightA, PoseLandmarkType rightB, PoseLandmarkType rightC,
+    PoseLandmarkType leftA,
+    PoseLandmarkType leftB,
+    PoseLandmarkType leftC,
+    PoseLandmarkType rightA,
+    PoseLandmarkType rightB,
+    PoseLandmarkType rightC,
   ) {
-    final left = [pose.landmarks[leftA], pose.landmarks[leftB], pose.landmarks[leftC]];
-    final right = [pose.landmarks[rightA], pose.landmarks[rightB], pose.landmarks[rightC]];
-
+    final left = [
+      pose.landmarks[leftA],
+      pose.landmarks[leftB],
+      pose.landmarks[leftC]
+    ];
+    final right = [
+      pose.landmarks[rightA],
+      pose.landmarks[rightB],
+      pose.landmarks[rightC]
+    ];
     double scoreOf(List<PoseLandmark?> pts) {
       if (pts.any((p) => p == null)) return -1;
       return pts.map((p) => p!.likelihood).reduce(math.min);
@@ -425,20 +471,17 @@ class _MainScreenState extends State<MainScreen>
 
     final leftScore = scoreOf(left);
     final rightScore = scoreOf(right);
-
-    if (leftScore < _minLikelihood && rightScore < _minLikelihood) return null;
-
+    if (leftScore < 0.55 && rightScore < 0.55) return null;
     final chosen = leftScore >= rightScore ? left : right;
     return [chosen[0]!, chosen[1]!, chosen[2]!];
   }
 
   double _smooth(List<double> buffer, double newValue) {
     buffer.add(newValue);
-    if (buffer.length > _smoothingWindow) buffer.removeAt(0);
+    if (buffer.length > 4) buffer.removeAt(0);
     return buffer.reduce((a, b) => a + b) / buffer.length;
   }
 
-  // خوارزمية السكوات المضبوطة
   void _trackSquatImproved(Pose pose) {
     final side = _pickReliableSide(
       pose,
@@ -450,14 +493,14 @@ class _MainScreenState extends State<MainScreen>
       PoseLandmarkType.rightAnkle,
     );
     if (side == null) return;
-
-    final angle = _smooth(_squatAngleBuffer, _calculateAngle(side[0], side[1], side[2]));
-
+    final angle =
+        _smooth(_squatAngleBuffer, _calculateAngle(side[0], side[1], side[2]));
     if (angle < 100.0) {
       _squatState = "down";
     } else if (angle > 160.0 && _squatState == "down") {
       final now = DateTime.now();
-      final canCount = _lastSquatTime == null || now.difference(_lastSquatTime!) > _repCooldown;
+      final canCount = _lastSquatTime == null ||
+          now.difference(_lastSquatTime!) > const Duration(milliseconds: 500);
       _squatState = "up";
       if (canCount) {
         _lastSquatTime = now;
@@ -477,107 +520,157 @@ class _MainScreenState extends State<MainScreen>
               ? 20
               : 30;
     });
+    _updateStreak();
     _saveData();
   }
 
-  void _openAppSelectionBottomSheet() {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: AppColors.surface,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(30)),
-      ),
-      builder: (context) {
-        return StatefulBuilder(
-          builder: (context, setModalState) {
-            return Padding(
-              padding: const EdgeInsets.all(20.0),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text(
-                        'اختيار تطبيقات الحظر',
-                        style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.white),
-                      ),
-                      IconButton(
-                        onPressed: () => Navigator.pop(context),
-                        icon: const Icon(Icons.close, color: Colors.white54),
-                      ),
-                    ],
-                  ),
-                  const Text(
-                    'حدد التطبيقات التي سيتم منعك من فتحها عند انتهاء الوقت حتى تمارس السكوات:',
-                    style: TextStyle(color: Colors.white60, fontSize: 13),
-                  ),
-                  const SizedBox(height: 15),
-                  ..._appsToBlock.entries.map((entry) {
-                    final pkg = entry.key;
-                    final data = entry.value;
-                    return SwitchListTile(
-                      activeColor: AppColors.neon,
-                      secondary: Icon(data['icon'] as IconData, color: AppColors.primary),
-                      title: Text(data['name'] as String, style: const TextStyle(color: Colors.white)),
-                      value: data['blocked'] as bool,
-                      onChanged: (val) {
-                        setModalState(() => data['blocked'] = val);
-                        setState(() {});
-                        _saveData();
-                      },
-                    );
-                  }),
-                  const SizedBox(height: 10),
-                  if (!_isBlockingServiceEnabled)
-                    ElevatedButton.icon(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: AppColors.amber,
-                        minimumSize: const Size(double.infinity, 48),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
-                      ),
-                      onPressed: () {
-                        Navigator.pop(context);
-                        _requestBlockingPermission();
-                      },
-                      icon: const Icon(Icons.security, color: Colors.black),
-                      label: const Text('تفعيل صلاحيات الحظر الآن', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
-                    ),
-                ],
-              ),
-            );
-          },
-        );
-      },
-    );
+  // ---------- Pedometer for Walking Mode ----------
+  void _startPedometer() {
+    _accelSub = accelerometerEvents.listen((AccelerometerEvent event) {
+      final magnitude = math.sqrt(
+          event.x * event.x + event.y * event.y + event.z * event.z);
+      final delta = magnitude - _lastMagnitude;
+      _lastMagnitude = magnitude;
+      if (delta > 15) {
+        // step threshold
+        _stepCount++;
+        // reward for walking: same logic as squat
+        if (_workoutMode != WorkoutMode.squatsOnly) {
+          setState(() {
+            points += (level == UserLevel.beginner)
+                ? 5
+                : (level == UserLevel.intermediate)
+                    ? 10
+                    : 15;
+          });
+          _updateStreak();
+          _saveData();
+          // add bonus time every 10 steps
+          if (_stepCount % 10 == 0) {
+            _addBonusTime(10);
+          }
+        }
+      }
+    });
   }
+
+  // ---------- Streak ----------
+  void _updateStreak() {
+    final today = DateTime.now().toIso8601String().substring(0, 10);
+    if (_lastWorkoutDate != today) {
+      final yesterday = DateTime.now()
+          .subtract(const Duration(days: 1))
+          .toIso8601String()
+          .substring(0, 10);
+      setState(() {
+        if (_lastWorkoutDate == yesterday) {
+          _streak++;
+        } else {
+          _streak = 1;
+        }
+        _lastWorkoutDate = today;
+      });
+    }
+  }
+
+  // ---------- Onboarding Completion ----------
+  void _completeOnboarding(int targetMinutes, double screenHours,
+      String motivation, WorkoutMode mode, UserLevel userLevel) {
+    setState(() {
+      _dailyTargetScrollMinutes = targetMinutes;
+      _dailyScreenHours = screenHours;
+      _selectedMotivation = motivation;
+      _workoutMode = mode;
+      level = userLevel;
+      _allowedScrollTime = targetMinutes * 60;
+      _onboardingComplete = true;
+    });
+    _saveData();
+  }
+
+  // ---------- Admin ----------
+  void _handleAdminTap() {
+    _adminTapCount++;
+    if (_adminTapCount >= 5) {
+      setState(() {
+        _isAdminVisible = true;
+        _adminTapCount = 0;
+      });
+      _showErrorSnackBar("Admin panel unlocked.");
+    }
+  }
+
+  // ---------- UI ----------
+  int _selectedTab = 0;
 
   @override
   Widget build(BuildContext context) {
-    double progress = _allowedScrollTime / _maxScrollTime;
-    final isLow = _allowedScrollTime <= 10 && !_isAppBlocked;
-
+    if (!_onboardingComplete) {
+      return OnboardingFlow(onComplete: _completeOnboarding);
+    }
     return Scaffold(
-      body: Container(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [AppColors.bg, Color(0xFF15152A)],
+      body: IndexedStack(
+        index: _selectedTab,
+        children: [
+          _buildHomeTab(),
+          _buildAppLockTab(),
+          _buildCreditsShopTab(),
+          _buildAnalyticsTab(),
+        ],
+      ),
+      bottomNavigationBar: Container(
+        decoration: BoxDecoration(
+          border: Border(
+            top: BorderSide(color: BoltColors.border, width: 1),
           ),
         ),
-        child: SafeArea(
-          child: Column(
-            children: [
-              _buildHeader(),
-              _buildTimeCard(progress, isLow),
-              const SizedBox(height: 10),
-              Expanded(flex: 6, child: _buildCameraArea()),
-              const SizedBox(height: 10),
-              Expanded(flex: 4, child: _buildStatsPanel()),
-            ],
-          ),
+        child: BottomNavigationBar(
+          currentIndex: _selectedTab,
+          onTap: (index) => setState(() => _selectedTab = index),
+          items: const [
+            BottomNavigationBarItem(
+              icon: Icon(Icons.fitness_center_rounded),
+              label: 'Workout',
+            ),
+            BottomNavigationBarItem(
+              icon: Icon(Icons.lock_rounded),
+              label: 'App Lock',
+            ),
+            BottomNavigationBarItem(
+              icon: Icon(Icons.card_giftcard_rounded),
+              label: 'Credits',
+            ),
+            BottomNavigationBarItem(
+              icon: Icon(Icons.bar_chart_rounded),
+              label: 'Analytics',
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildHomeTab() {
+    double progress = _allowedScrollTime / _maxScrollTime;
+    bool isLow = _allowedScrollTime <= 30 && !_isAppBlocked;
+    return Container(
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [BoltColors.bg, Color(0xFF15152A)],
+        ),
+      ),
+      child: SafeArea(
+        child: Column(
+          children: [
+            _buildHeader(),
+            _buildTimeCard(progress, isLow),
+            const SizedBox(height: 8),
+            Expanded(flex: 5, child: _buildCameraArea()),
+            const SizedBox(height: 8),
+            Expanded(flex: 3, child: _buildStatsPanel()),
+          ],
         ),
       ),
     );
@@ -591,7 +684,7 @@ class _MainScreenState extends State<MainScreen>
         children: [
           ShaderMask(
             shaderCallback: (bounds) => const LinearGradient(
-              colors: [AppColors.neon, AppColors.primary],
+              colors: [BoltColors.neon, BoltColors.neon],
             ).createShader(bounds),
             child: const Text(
               'FITPAY',
@@ -605,23 +698,33 @@ class _MainScreenState extends State<MainScreen>
           ),
           Row(
             children: [
-              IconButton(
-                icon: const Icon(Icons.app_blocking_rounded, color: AppColors.neon, size: 26),
-                onPressed: _openAppSelectionBottomSheet,
-                tooltip: 'تطبيقات الحظر',
-              ),
+              // Streak fire
+              if (_streak > 0) ...[
+                Icon(Icons.local_fire_department_rounded,
+                    color: BoltColors.warning, size: 20),
+                Text('$_streak',
+                    style: const TextStyle(
+                        color: BoltColors.warning, fontWeight: FontWeight.bold)),
+                const SizedBox(width: 12),
+              ],
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                 decoration: BoxDecoration(
-                  color: AppColors.surfaceLight,
+                  color: BoltColors.surfaceLight,
                   borderRadius: BorderRadius.circular(20),
-                  border: Border.all(color: AppColors.amber.withOpacity(0.3)),
+                  border: Border.all(color: BoltColors.neon.withOpacity(0.3)),
                 ),
                 child: Row(
                   children: [
-                    const Icon(Icons.stars_rounded, color: AppColors.amber, size: 20),
+                    const Icon(Icons.stars_rounded,
+                        color: BoltColors.warning, size: 20),
                     const SizedBox(width: 4),
-                    Text('$points', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15)),
+                    Text('$points',
+                        style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 15)),
                   ],
                 ),
               ),
@@ -638,76 +741,87 @@ class _MainScreenState extends State<MainScreen>
       child: AnimatedBuilder(
         animation: _pulseController,
         builder: (context, child) {
-          final glowStrength = (isLow || _isAppBlocked) ? _pulseController.value : 0.0;
+          final glow = (isLow || _isAppBlocked) ? _pulseController.value : 0.0;
           return Container(
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
-              color: AppColors.surface,
+              color: BoltColors.surface,
               borderRadius: BorderRadius.circular(24),
               border: Border.all(
-                color: (_isAppBlocked ? AppColors.danger : AppColors.primary)
-                    .withOpacity(0.3 + glowStrength * 0.4),
+                color: (_isAppBlocked ? BoltColors.danger : BoltColors.neon)
+                    .withOpacity(0.3 + glow * 0.4),
                 width: 1.5,
               ),
               boxShadow: [
                 BoxShadow(
-                  color: (_isAppBlocked ? AppColors.danger : AppColors.primary)
-                      .withOpacity(0.15 + glowStrength * 0.15),
+                  color: (_isAppBlocked ? BoltColors.danger : BoltColors.neon)
+                      .withOpacity(0.15 + glow * 0.15),
                   blurRadius: 18,
                   spreadRadius: 1,
                 )
               ],
             ),
-            child: child,
-          );
-        },
-        child: Column(
-          children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            child: Column(
               children: [
                 Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Icon(
-                      _isAppBlocked ? Icons.lock_clock_rounded : Icons.timer_outlined,
-                      color: _isAppBlocked ? AppColors.danger : AppColors.amber,
-                      size: 24,
+                    Row(
+                      children: [
+                        Icon(
+                          _isAppBlocked
+                              ? Icons.lock_clock_rounded
+                              : Icons.timer_outlined,
+                          color: _isAppBlocked
+                              ? BoltColors.danger
+                              : BoltColors.warning,
+                          size: 24,
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          _isAppBlocked
+                              ? 'Time’s up! Exercise to unlock'
+                              : 'Scroll Credits',
+                          style:
+                              const TextStyle(color: Colors.white70, fontSize: 14),
+                        ),
+                      ],
                     ),
-                    const SizedBox(width: 8),
                     Text(
-                      _isAppBlocked ? 'انتهى الوقت! اعمل سكوات لفك الحظر' : 'الرصيد المتبقي',
-                      style: const TextStyle(color: Colors.white70, fontSize: 14),
+                      '${_allowedScrollTime ~/ 60}m ${_allowedScrollTime % 60}s',
+                      style: TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.w900,
+                        color: _isAppBlocked
+                            ? BoltColors.danger
+                            : Colors.white,
+                      ),
                     ),
                   ],
                 ),
-                Text(
-                  '$_allowedScrollTime ثانية',
-                  style: TextStyle(
-                    fontSize: 22,
-                    fontWeight: FontWeight.w900,
-                    color: _isAppBlocked ? AppColors.danger : Colors.white,
+                const SizedBox(height: 10),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(15),
+                  child: TweenAnimationBuilder<double>(
+                    tween:
+                        Tween(begin: 0, end: progress.clamp(0.0, 1.0)),
+                    duration: const Duration(milliseconds: 400),
+                    builder: (context, value, _) => LinearProgressIndicator(
+                      value: value,
+                      minHeight: 10,
+                      backgroundColor: Colors.white12,
+                      valueColor: AlwaysStoppedAnimation<Color>(
+                        _isAppBlocked
+                            ? BoltColors.danger
+                            : BoltColors.success,
+                      ),
+                    ),
                   ),
                 ),
               ],
             ),
-            const SizedBox(height: 10),
-            ClipRRect(
-              borderRadius: BorderRadius.circular(15),
-              child: TweenAnimationBuilder<double>(
-                tween: Tween(begin: 0, end: progress.clamp(0.0, 1.0)),
-                duration: const Duration(milliseconds: 400),
-                builder: (context, value, _) => LinearProgressIndicator(
-                  value: value,
-                  minHeight: 10,
-                  backgroundColor: Colors.white12,
-                  valueColor: AlwaysStoppedAnimation<Color>(
-                    _isAppBlocked ? AppColors.danger : AppColors.success,
-                  ),
-                ),
-              ),
-            ),
-          ],
-        ),
+          );
+        },
       ),
     );
   }
@@ -726,9 +840,12 @@ class _MainScreenState extends State<MainScreen>
               decoration: BoxDecoration(
                 color: Colors.black,
                 borderRadius: BorderRadius.circular(28),
-                border: Border.all(color: AppColors.primary, width: 2.5),
+                border: Border.all(color: BoltColors.neon, width: 2.5),
                 boxShadow: const [
-                  BoxShadow(color: Color(0x4D6C63FF), blurRadius: 20, spreadRadius: 2)
+                  BoxShadow(
+                      color: Color(0x4D00F0FF),
+                      blurRadius: 20,
+                      spreadRadius: 2)
                 ],
               ),
               child: _buildCameraContent(),
@@ -736,11 +853,12 @@ class _MainScreenState extends State<MainScreen>
             if (_showSuccessFlash) ...[
               Container(
                 decoration: BoxDecoration(
-                  color: AppColors.success.withOpacity(0.25),
+                  color: BoltColors.success.withOpacity(0.25),
                   borderRadius: BorderRadius.circular(28),
                 ),
               ),
-              const Icon(Icons.check_circle_rounded, color: AppColors.success, size: 85),
+              const Icon(Icons.check_circle_rounded,
+                  color: BoltColors.success, size: 85),
             ],
           ],
         ),
@@ -754,34 +872,39 @@ class _MainScreenState extends State<MainScreen>
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.videocam_off_rounded, color: Colors.white38, size: 48),
+            const Icon(Icons.videocam_off_rounded,
+                color: Colors.white38, size: 48),
             const SizedBox(height: 10),
-            Text(_cameraError!, style: const TextStyle(color: Colors.white60)),
+            Text(_cameraError!,
+                style: const TextStyle(color: Colors.white60)),
             TextButton(
               onPressed: () {
                 setState(() => _cameraError = null);
                 _initializeCamera();
               },
-              child: const Text('إعادة المحاولة', style: TextStyle(color: AppColors.neon)),
+              child: const Text('Retry',
+                  style: TextStyle(color: BoltColors.neon)),
             ),
           ],
         ),
       );
     }
-
     if (!_isCameraInitialized || controller == null) {
-      return const Center(child: CircularProgressIndicator(color: AppColors.primary));
+      return const Center(
+          child: CircularProgressIndicator(color: BoltColors.neon));
     }
-
     return Transform(
       alignment: Alignment.center,
-      transform: _isFrontCamera ? Matrix4.rotationY(math.pi) : Matrix4.identity(),
+      transform: _isFrontCamera
+          ? Matrix4.rotationY(math.pi)
+          : Matrix4.identity(),
       child: Stack(
         fit: StackFit.expand,
         children: [
           CameraPreview(controller!),
           if (_latestPose != null && _imageSize != null)
-            CustomPaint(painter: NeonSkeletonPainter(_latestPose!, _imageSize!)),
+            CustomPaint(
+                painter: NeonSkeletonPainter(_latestPose!, _imageSize!)),
         ],
       ),
     );
@@ -791,12 +914,15 @@ class _MainScreenState extends State<MainScreen>
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
       decoration: const BoxDecoration(
-        color: AppColors.surface,
+        color: BoltColors.surface,
         borderRadius: BorderRadius.only(
           topLeft: Radius.circular(32),
           topRight: Radius.circular(32),
         ),
-        boxShadow: [BoxShadow(color: Colors.black45, blurRadius: 15, offset: Offset(0, -5))],
+        boxShadow: [
+          BoxShadow(
+              color: Colors.black45, blurRadius: 15, offset: Offset(0, -5))
+        ],
       ),
       child: Column(
         mainAxisAlignment: MainAxisAlignment.spaceEvenly,
@@ -804,22 +930,29 @@ class _MainScreenState extends State<MainScreen>
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceEvenly,
             children: [
-              _buildStatCard('عدد السكوات', squatsCount, AppColors.neon, Icons.accessibility_new_rounded),
-              _buildStatCard('مجموع النقاط', points, AppColors.amber, Icons.stars_rounded),
+              _buildStatCard('Squats', squatsCount, BoltColors.neon,
+                  Icons.accessibility_new_rounded),
+              _buildStatCard('Steps', _stepCount, BoltColors.success,
+                  Icons.directions_walk_rounded),
             ],
           ),
+          const SizedBox(height: 12),
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const Text('المستوى: ', style: TextStyle(color: Colors.white54, fontSize: 13)),
+              const Text('Level: ',
+                  style:
+                      TextStyle(color: Colors.white54, fontSize: 13)),
               Container(
                 padding: const EdgeInsets.all(4),
-                decoration: BoxDecoration(color: AppColors.surfaceLight, borderRadius: BorderRadius.circular(15)),
+                decoration: BoxDecoration(
+                    color: BoltColors.surfaceLight,
+                    borderRadius: BorderRadius.circular(15)),
                 child: Row(
                   children: [
-                    _buildLevelChip('مبتدئ', UserLevel.beginner),
-                    _buildLevelChip('متوسط', UserLevel.intermediate),
-                    _buildLevelChip('وحش', UserLevel.advanced),
+                    _buildLevelChip('Beginner', UserLevel.beginner),
+                    _buildLevelChip('Intermediate', UserLevel.intermediate),
+                    _buildLevelChip('Beast', UserLevel.advanced),
                   ],
                 ),
               ),
@@ -830,12 +963,13 @@ class _MainScreenState extends State<MainScreen>
     );
   }
 
-  Widget _buildStatCard(String title, int value, Color color, IconData icon) {
+  Widget _buildStatCard(
+      String title, int value, Color color, IconData icon) {
     return Container(
       width: 135,
       padding: const EdgeInsets.symmetric(vertical: 10),
       decoration: BoxDecoration(
-        color: AppColors.surfaceLight,
+        color: BoltColors.surfaceLight,
         borderRadius: BorderRadius.circular(18),
         border: Border.all(color: color.withOpacity(0.4), width: 1.5),
       ),
@@ -843,8 +977,12 @@ class _MainScreenState extends State<MainScreen>
         children: [
           Icon(icon, color: color, size: 26),
           const SizedBox(height: 4),
-          Text(title, style: const TextStyle(color: Colors.white70, fontSize: 12)),
-          Text('$value', style: TextStyle(color: color, fontSize: 24, fontWeight: FontWeight.w900)),
+          Text(title,
+              style:
+                  const TextStyle(color: Colors.white70, fontSize: 12)),
+          Text('$value',
+              style: TextStyle(
+                  color: color, fontSize: 24, fontWeight: FontWeight.w900)),
         ],
       ),
     );
@@ -853,7 +991,9 @@ class _MainScreenState extends State<MainScreen>
   Widget _buildLevelChip(String label, UserLevel chipLevel) {
     bool isSelected = level == chipLevel;
     return ChoiceChip(
-      label: Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+      label: Text(label,
+          style: const TextStyle(
+              fontSize: 12, fontWeight: FontWeight.bold)),
       selected: isSelected,
       onSelected: (selected) {
         if (selected) {
@@ -861,14 +1001,464 @@ class _MainScreenState extends State<MainScreen>
           _saveData();
         }
       },
-      selectedColor: AppColors.primary,
+      selectedColor: BoltColors.neon.withOpacity(0.2),
       backgroundColor: Colors.transparent,
-      labelStyle: TextStyle(color: isSelected ? Colors.white : Colors.white60),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      labelStyle: TextStyle(
+          color: isSelected ? BoltColors.neon : Colors.white60),
+      shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12)),
+      padding:
+          const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
     );
   }
 
+  // ---------- Tab 2: App Lock Manager ----------
+  Widget _buildAppLockTab() {
+    return Container(
+      color: BoltColors.bg,
+      child: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('App Lock Manager',
+                  style: TextStyle(
+                      fontSize: 28,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white)),
+              const SizedBox(height: 8),
+              Text(
+                'Block distracting apps when scroll credits run out.',
+                style: TextStyle(color: Colors.white60, fontSize: 14),
+              ),
+              const SizedBox(height: 20),
+              Expanded(
+                child: ListView(
+                  children: _appsToBlock.entries.map((entry) {
+                    final data = entry.value;
+                    return Card(
+                      color: BoltColors.surface,
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(16)),
+                      child: SwitchListTile(
+                        activeColor: BoltColors.neon,
+                        secondary: Icon(data['icon'] as IconData,
+                            color: BoltColors.neon),
+                        title: Text(data['name'] as String,
+                            style: const TextStyle(color: Colors.white)),
+                        value: data['blocked'] as bool,
+                        onChanged: (val) {
+                          setState(() => data['blocked'] = val);
+                          _saveData();
+                        },
+                      ),
+                    );
+                  }).toList(),
+                ),
+              ),
+              if (!_isBlockingServiceEnabled)
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: BoltColors.warning,
+                      foregroundColor: Colors.black,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(16)),
+                    ),
+                    onPressed: _requestBlockingPermission,
+                    icon: const Icon(Icons.security),
+                    label: const Text('Grant Overlay Permission',
+                        style: TextStyle(fontWeight: FontWeight.bold)),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ---------- Tab 3: Credits & Pro Shop ----------
+  Widget _buildCreditsShopTab() {
+    return Container(
+      color: BoltColors.bg,
+      child: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('Credits & Pro Shop',
+                  style: TextStyle(
+                      fontSize: 28,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white)),
+              const SizedBox(height: 20),
+              // Redeem points
+              Text('Your Points: $points',
+                  style: const TextStyle(
+                      color: BoltColors.warning,
+                      fontSize: 22,
+                      fontWeight: FontWeight.bold)),
+              const SizedBox(height: 16),
+              const Text('Redeem for Scroll Time',
+                  style: TextStyle(
+                      color: Colors.white, fontSize: 18)),
+              const SizedBox(height: 12),
+              _redeemCard(500, 5), // 500 pts = 5 min
+              const SizedBox(height: 10),
+              _redeemCard(1000, 12), // 1000 pts = 12 min
+              const SizedBox(height: 10),
+              _redeemCard(2000, 30), // 2000 pts = 30 min
+              const SizedBox(height: 30),
+              // Pro subscription
+              Container(
+                padding: const EdgeInsets.all(20),
+                decoration: BoxDecoration(
+                  gradient: const LinearGradient(
+                    colors: [Color(0xFF1E1E30), Color(0xFF161620)],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                  borderRadius: BorderRadius.circular(24),
+                  border: Border.all(color: BoltColors.neon.withOpacity(0.3)),
+                  boxShadow: [
+                    BoxShadow(
+                        color: BoltColors.neon.withOpacity(0.1),
+                        blurRadius: 20,
+                        spreadRadius: 2)
+                  ],
+                ),
+                child: Column(
+                  children: [
+                    const Icon(Icons.diamond_rounded,
+                        color: BoltColors.neon, size: 40),
+                    const SizedBox(height: 8),
+                    const Text('FitPay Pro',
+                        style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 24,
+                            fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 4),
+                    const Text(
+                        'Unlimited blocks, leaderboards, zero ads',
+                        textAlign: TextAlign.center,
+                        style:
+                            TextStyle(color: Colors.white70, fontSize: 14)),
+                    const SizedBox(height: 20),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      children: [
+                        _proPlan('Monthly', '\$4.99', 'month'),
+                        _proPlan('Annual', '\$29.99', 'year',
+                            bestValue: true),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton.icon(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: BoltColors.neon,
+                          foregroundColor: Colors.black,
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(16)),
+                        ),
+                        onPressed: () {
+                          // Simulate starting trial
+                          _showErrorSnackBar(
+                              '7-Day Free Trial activated (mock)');
+                        },
+                        icon: const Icon(Icons.local_fire_department),
+                        label: const Text('Start 7-Day Free Trial',
+                            style: TextStyle(fontWeight: FontWeight.bold)),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _redeemCard(int pointsCost, int minutes) {
+    final canAfford = points >= pointsCost;
+    return Card(
+      color: BoltColors.surface,
+      shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: BorderSide(
+              color: canAfford
+                  ? BoltColors.neon.withOpacity(0.4)
+                  : Colors.white10)),
+      child: ListTile(
+        leading: Icon(Icons.timer_rounded,
+            color: canAfford ? BoltColors.neon : Colors.white38),
+        title: Text('$minutes minutes scroll time',
+            style: TextStyle(
+                color: canAfford ? Colors.white : Colors.white38)),
+        subtitle: Text('Cost: $pointsCost points',
+            style: const TextStyle(color: Colors.white54)),
+        trailing: ElevatedButton(
+          style: ElevatedButton.styleFrom(
+            backgroundColor:
+                canAfford ? BoltColors.neon : Colors.white12,
+            foregroundColor: canAfford ? Colors.black : Colors.white38,
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12)),
+          ),
+          onPressed: canAfford
+              ? () {
+                  setState(() {
+                    points -= pointsCost;
+                    _allowedScrollTime += minutes * 60;
+                    _saveData();
+                  });
+                }
+              : null,
+          child: const Text('Redeem'),
+        ),
+      ),
+    );
+  }
+
+  Widget _proPlan(String name, String price, String period,
+      {bool bestValue = false}) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        color: bestValue ? BoltColors.neon.withOpacity(0.1) : Colors.white5,
+        borderRadius: BorderRadius.circular(16),
+        border: bestValue
+            ? Border.all(color: BoltColors.neon, width: 1.5)
+            : Border.all(color: Colors.white10),
+      ),
+      child: Column(
+        children: [
+          if (bestValue)
+            Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+              margin: const EdgeInsets.only(bottom: 6),
+              decoration: BoxDecoration(
+                color: BoltColors.neon,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Text('BEST VALUE',
+                  style: TextStyle(
+                      color: Colors.black,
+                      fontSize: 10,
+                      fontWeight: FontWeight.bold)),
+            ),
+          Text(name,
+              style: const TextStyle(color: Colors.white, fontSize: 16)),
+          Text(price,
+              style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 22,
+                  fontWeight: FontWeight.bold)),
+          Text('/$period',
+              style: const TextStyle(color: Colors.white54, fontSize: 13)),
+        ],
+      ),
+    );
+  }
+
+  // ---------- Tab 4: Analytics & Admin ----------
+  Widget _buildAnalyticsTab() {
+    final wastedYears = _dailyScreenHours * 3650 / 24;
+    return Container(
+      color: BoltColors.bg,
+      child: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('Analytics & Squad',
+                  style: TextStyle(
+                      fontSize: 28,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white)),
+              const SizedBox(height: 20),
+              // Reality Check
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: BoltColors.surface,
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: BoltColors.danger.withOpacity(0.4)),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.warning_amber_rounded,
+                        color: BoltColors.danger, size: 32),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text('10-Year Reality Check',
+                              style: TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 16)),
+                          Text(
+                              'At ${_dailyScreenHours.toStringAsFixed(1)}h/day, you will waste ${wastedYears.toStringAsFixed(1)} YEARS of your life on your phone.',
+                              style: const TextStyle(
+                                  color: Colors.white70, fontSize: 14)),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 24),
+              // Progress charts (mock)
+              _buildProgressCard('Today', Icons.today_rounded,
+                  '${squatsCount} squats, ${_stepCount} steps'),
+              _buildProgressCard('This Week', Icons.calendar_view_week_rounded,
+                  '${(squatsCount * 7)} squats (est), ${(_stepCount * 7)} steps'),
+              _buildProgressCard('Saved Time',
+                  Icons.access_time_rounded,
+                  '${(_allowedScrollTime ~/ 60)} minutes'),
+              const SizedBox(height: 24),
+              // Squad leaderboard (mock)
+              const Text('Squad Leaderboard',
+                  style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold)),
+              const SizedBox(height: 12),
+              _leaderboardTile('1', 'You', points),
+              _leaderboardTile('2', 'FitFighter92', 8500),
+              _leaderboardTile('3', 'SquatQueen', 7200),
+              const SizedBox(height: 30),
+              // Admin Panel trigger
+              GestureDetector(
+                onTap: _handleAdminTap,
+                child: Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: BoltColors.surface,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.white10),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.settings_applications,
+                          color: Colors.white38),
+                      const SizedBox(width: 12),
+                      const Text('App Version 1.0.0',
+                          style: TextStyle(color: Colors.white54)),
+                      const Spacer(),
+                      if (_isAdminVisible)
+                        const Icon(Icons.shield_rounded,
+                            color: BoltColors.neon),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+              if (_isAdminVisible) _buildAdminPanel(),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildProgressCard(String title, IconData icon, String value) {
+    return Card(
+      color: BoltColors.surface,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      margin: const EdgeInsets.only(bottom: 12),
+      child: ListTile(
+        leading: Icon(icon, color: BoltColors.neon),
+        title: Text(title,
+            style: const TextStyle(
+                color: Colors.white, fontWeight: FontWeight.w600)),
+        subtitle: Text(value,
+            style: const TextStyle(color: Colors.white70, fontSize: 16)),
+      ),
+    );
+  }
+
+  Widget _leaderboardTile(String rank, String name, int score) {
+    return ListTile(
+      leading: CircleAvatar(
+        backgroundColor: rank == '1' ? BoltColors.warning : BoltColors.surfaceLight,
+        child: Text(rank,
+            style: const TextStyle(
+                color: Colors.white, fontWeight: FontWeight.bold)),
+      ),
+      title: Text(name, style: const TextStyle(color: Colors.white)),
+      trailing: Text('$score pts',
+          style: const TextStyle(
+              color: BoltColors.warning, fontWeight: FontWeight.bold)),
+    );
+  }
+
+  Widget _buildAdminPanel() {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: BoltColors.surface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: BoltColors.neon.withOpacity(0.6)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('👑 Owner Dashboard',
+              style: TextStyle(
+                  color: BoltColors.neon,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 18)),
+          const Divider(color: Colors.white10),
+          const SizedBox(height: 8),
+          _adminAction('Test Overlay Permission', Icons.security,
+              _requestBlockingPermission),
+          _adminAction('Add 1000 Credits', Icons.add_circle, () {
+            setState(() => points += 1000);
+            _saveData();
+          }),
+          _adminAction('Toggle Pro Status', Icons.diamond, () {
+            // mock Pro toggle
+            _showErrorSnackBar("Pro status toggled (mock)");
+          }),
+          const SizedBox(height: 12),
+          const Text('Simulated Metrics',
+              style: TextStyle(color: Colors.white70, fontSize: 13)),
+          const SizedBox(height: 4),
+          const Text('• Total Users: 128',
+              style: TextStyle(color: Colors.white54)),
+          const Text('• Active Now: 12',
+              style: TextStyle(color: Colors.white54)),
+        ],
+      ),
+    );
+  }
+
+  Widget _adminAction(String label, IconData icon, VoidCallback onTap) {
+    return ListTile(
+      leading: Icon(icon, color: BoltColors.neon),
+      title: Text(label, style: const TextStyle(color: Colors.white)),
+      trailing: const Icon(Icons.arrow_forward_ios,
+          size: 16, color: Colors.white38),
+      onTap: onTap,
+    );
+  }
+
+  // ---------- Onboarding Flow ----------
+  // The _inputImageFromCameraImage helper (preserved)
   _InputImageResult? _inputImageFromCameraImage(CameraImage image) {
     final cam = controller;
     if (cam == null) return null;
@@ -878,27 +1468,29 @@ class _MainScreenState extends State<MainScreen>
     if (Platform.isIOS) {
       rotation = InputImageRotationValue.fromRawValue(camera.sensorOrientation);
     } else if (Platform.isAndroid) {
-      var rotationCompensation = _orientations[cam.value.deviceOrientation];
+      var rotationCompensation =
+          _orientations[cam.value.deviceOrientation];
       if (rotationCompensation == null) return null;
       if (camera.lensDirection == CameraLensDirection.front) {
-        rotationCompensation = (camera.sensorOrientation + rotationCompensation) % 360;
+        rotationCompensation =
+            (camera.sensorOrientation + rotationCompensation) % 360;
       } else {
-        rotationCompensation = (camera.sensorOrientation - rotationCompensation + 360) % 360;
+        rotationCompensation =
+            (camera.sensorOrientation - rotationCompensation + 360) % 360;
       }
       rotation = InputImageRotationValue.fromRawValue(rotationCompensation);
     }
     if (rotation == null) return null;
 
-    final format = Platform.isAndroid ? InputImageFormat.nv21 : InputImageFormat.bgra8888;
-
+    final format = Platform.isAndroid
+        ? InputImageFormat.nv21
+        : InputImageFormat.bgra8888;
     final WriteBuffer allBytes = WriteBuffer();
     for (final plane in image.planes) {
       allBytes.putUint8List(plane.bytes);
     }
     final bytes = allBytes.done().buffer.asUint8List();
-
     final rawSize = Size(image.width.toDouble(), image.height.toDouble());
-
     final inputImage = InputImage.fromBytes(
       bytes: bytes,
       metadata: InputImageMetadata(
@@ -908,24 +1500,333 @@ class _MainScreenState extends State<MainScreen>
         bytesPerRow: image.planes[0].bytesPerRow,
       ),
     );
-
-    final isRotated90or270 =
-        rotation == InputImageRotation.rotation90deg ||
+    final isRotated90or270 = rotation == InputImageRotation.rotation90deg ||
         rotation == InputImageRotation.rotation270deg;
     final adjustedSize =
         isRotated90or270 ? Size(rawSize.height, rawSize.width) : rawSize;
+    return _InputImageResult(
+        inputImage: inputImage, adjustedSize: adjustedSize);
+  }
 
-    return _InputImageResult(inputImage: inputImage, adjustedSize: adjustedSize);
+  static const Map<DeviceOrientation, int> _orientations = {
+    DeviceOrientation.portraitUp: 0,
+    DeviceOrientation.landscapeLeft: 90,
+    DeviceOrientation.portraitDown: 180,
+    DeviceOrientation.landscapeRight: 270,
+  };
+}
+
+// ---------- Onboarding Flow ----------
+class OnboardingFlow extends StatefulWidget {
+  final Function(int targetMinutes, double screenHours, String motivation,
+      WorkoutMode mode, UserLevel level) onComplete;
+  const OnboardingFlow({super.key, required this.onComplete});
+
+  @override
+  State<OnboardingFlow> createState() => _OnboardingFlowState();
+}
+
+class _OnboardingFlowState extends State<OnboardingFlow> {
+  final PageController _pageController = PageController();
+  int _currentStep = 0;
+
+  // answers
+  double _screenHours = 6.0;
+  int _targetMinutes = 30;
+  String _motivation = 'Reduce screen time';
+  WorkoutMode _mode = WorkoutMode.both;
+  UserLevel _level = UserLevel.beginner;
+  String _source = 'Social Media';
+
+  void _next() {
+    if (_currentStep < 5) {
+      _pageController.nextPage(
+          duration: const Duration(milliseconds: 400), curve: Curves.easeInOut);
+    } else {
+      widget.onComplete(_targetMinutes, _screenHours, _motivation, _mode, _level);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: BoltColors.bg,
+      body: SafeArea(
+        child: Column(
+          children: [
+            // progress dots
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: List.generate(6, (index) {
+                  return AnimatedContainer(
+                    duration: const Duration(milliseconds: 300),
+                    margin: const EdgeInsets.symmetric(horizontal: 4),
+                    width: _currentStep == index ? 24 : 8,
+                    height: 8,
+                    decoration: BoxDecoration(
+                      color: _currentStep == index
+                          ? BoltColors.neon
+                          : Colors.white24,
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                  );
+                }),
+              ),
+            ),
+            Expanded(
+              child: PageView(
+                controller: _pageController,
+                physics: const NeverScrollableScrollPhysics(),
+                onPageChanged: (i) => setState(() => _currentStep = i),
+                children: [
+                  _step1(), _step2(), _step3(), _step4(), _step5(), _step6(),
+                ],
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.all(20),
+              child: SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: BoltColors.neon,
+                    foregroundColor: Colors.black,
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(16)),
+                  ),
+                  onPressed: _next,
+                  child: Text(
+                    _currentStep == 5 ? 'Start Fitpay' : 'Next',
+                    style: const TextStyle(
+                        fontWeight: FontWeight.bold, fontSize: 16),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _step1() {
+    final yearsWasted = _screenHours * 3650 / 24;
+    return OnboardingStep(
+      title: 'Daily Screen Time',
+      child: Column(
+        children: [
+          const Text('How many hours do you spend on your phone daily?',
+              style: TextStyle(color: Colors.white70, fontSize: 16),
+              textAlign: TextAlign.center),
+          Slider(
+            value: _screenHours,
+            min: 1,
+            max: 16,
+            divisions: 15,
+            activeColor: BoltColors.neon,
+            onChanged: (v) => setState(() => _screenHours = v),
+          ),
+          Text('${_screenHours.toStringAsFixed(1)} hours',
+              style: const TextStyle(
+                  color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 20),
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: BoltColors.surface,
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: BoltColors.danger.withOpacity(0.5)),
+            ),
+            child: Text(
+              'At this rate, you will waste ${yearsWasted.toStringAsFixed(1)} YEARS of your life on your phone in the next 10 years!',
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                  color: BoltColors.danger,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 16),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _step2() {
+    return OnboardingStep(
+      title: 'Target Scroll Time',
+      child: Column(
+        children: [
+          const Text('How many minutes of unlocked phone time do you want daily?',
+              style: TextStyle(color: Colors.white70, fontSize: 16),
+              textAlign: TextAlign.center),
+          Slider(
+            value: _targetMinutes.toDouble(),
+            min: 5,
+            max: 120,
+            divisions: 23,
+            activeColor: BoltColors.neon,
+            onChanged: (v) => setState(() => _targetMinutes = v.round()),
+          ),
+          Text('$_targetMinutes minutes',
+              style: const TextStyle(
+                  color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold)),
+        ],
+      ),
+    );
+  }
+
+  Widget _step3() {
+    return OnboardingStep(
+      title: 'Your Motivation',
+      child: Column(
+        children: [
+          const Text('Why do you want to train with Fitpay?',
+              style: TextStyle(color: Colors.white70, fontSize: 16)),
+          const SizedBox(height: 12),
+          ...['Reduce screen time', 'Lose weight', 'Build strength', 'Stay active']
+              .map((m) => ChoiceChip(
+                    label: Text(m),
+                    selected: _motivation == m,
+                    onSelected: (_) => setState(() => _motivation = m),
+                    selectedColor: BoltColors.neon.withOpacity(0.2),
+                    backgroundColor: BoltColors.surface,
+                    labelStyle: TextStyle(
+                        color: _motivation == m
+                            ? BoltColors.neon
+                            : Colors.white70),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12)),
+                  ))
+              .toList(),
+        ],
+      ),
+    );
+  }
+
+  Widget _step4() {
+    return OnboardingStep(
+      title: 'Workout Preference',
+      child: Column(
+        children: [
+          const Text('Select your preferred exercise mode:',
+              style: TextStyle(color: Colors.white70, fontSize: 16)),
+          const SizedBox(height: 12),
+          ...['Walking Only', 'Squats Only', 'Both']
+              .asMap()
+              .entries
+              .map((e) => ChoiceChip(
+                    label: Text(e.value),
+                    selected: _mode.index == e.key,
+                    onSelected: (_) =>
+                        setState(() => _mode = WorkoutMode.values[e.key]),
+                    selectedColor: BoltColors.neon.withOpacity(0.2),
+                    backgroundColor: BoltColors.surface,
+                    labelStyle: TextStyle(
+                        color: _mode.index == e.key
+                            ? BoltColors.neon
+                            : Colors.white70),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12)),
+                  ))
+              .toList(),
+        ],
+      ),
+    );
+  }
+
+  Widget _step5() {
+    return OnboardingStep(
+      title: 'Fitness Level',
+      child: Column(
+        children: [
+          const Text('Choose your capacity:',
+              style: TextStyle(color: Colors.white70, fontSize: 16)),
+          const SizedBox(height: 12),
+          ...UserLevel.values
+              .map((l) => ChoiceChip(
+                    label: Text(l == UserLevel.beginner
+                        ? 'Beginner (50m/10 squats = 1 min)'
+                        : l == UserLevel.intermediate
+                            ? 'Intermediate (75m/15 squats = 1 min)'
+                            : 'Beast Mode (100m/20 squats = 1 min)'),
+                    selected: _level == l,
+                    onSelected: (_) => setState(() => _level = l),
+                    selectedColor: BoltColors.neon.withOpacity(0.2),
+                    backgroundColor: BoltColors.surface,
+                    labelStyle: TextStyle(
+                        color: _level == l ? BoltColors.neon : Colors.white70),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12)),
+                  ))
+              .toList(),
+        ],
+      ),
+    );
+  }
+
+  Widget _step6() {
+    return OnboardingStep(
+      title: 'How did you find us?',
+      child: Column(
+        children: [
+          const Text('Select one:',
+              style: TextStyle(color: Colors.white70, fontSize: 16)),
+          const SizedBox(height: 12),
+          ...['Social Media', 'Friend', 'App Store', 'Other']
+              .map((s) => ChoiceChip(
+                    label: Text(s),
+                    selected: _source == s,
+                    onSelected: (_) => setState(() => _source = s),
+                    selectedColor: BoltColors.neon.withOpacity(0.2),
+                    backgroundColor: BoltColors.surface,
+                    labelStyle: TextStyle(
+                        color: _source == s ? BoltColors.neon : Colors.white70),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12)),
+                  ))
+              .toList(),
+        ],
+      ),
+    );
   }
 }
 
+class OnboardingStep extends StatelessWidget {
+  final String title;
+  final Widget child;
+  const OnboardingStep({super.key, required this.title, required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 24),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Text(title,
+              style: const TextStyle(
+                  fontSize: 28,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.white)),
+          const SizedBox(height: 24),
+          child,
+        ],
+      ),
+    );
+  }
+}
+
+// ---------- Preserved Helper Classes ----------
 class _InputImageResult {
   final InputImage inputImage;
   final Size adjustedSize;
   const _InputImageResult({required this.inputImage, required this.adjustedSize});
 }
 
-// رسم خط الهيكل النيون
+// Neon skeleton painter (unchanged logic, adapted colors)
 class NeonSkeletonPainter extends CustomPainter {
   final Pose pose;
   final Size imageSize;
@@ -962,7 +1863,8 @@ class NeonSkeletonPainter extends CustomPainter {
 
     Offset? getPoint(PoseLandmarkType type) {
       final landmark = pose.landmarks[type];
-      if (landmark == null || landmark.likelihood < _minLikelihoodToDraw) return null;
+      if (landmark == null || landmark.likelihood < _minLikelihoodToDraw)
+        return null;
       return Offset(landmark.x * scaleX, landmark.y * scaleY);
     }
 
