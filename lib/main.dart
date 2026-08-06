@@ -210,11 +210,9 @@ class _MainScreenState extends State<MainScreen>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
-      // User left Fitpay -> Start recording time spent outside!
       _backgroundStartTime = DateTime.now();
       _stopStreamSafely();
     } else if (state == AppLifecycleState.resumed) {
-      // User returned to Fitpay -> Calculate elapsed time outside
       if (_backgroundStartTime != null) {
         final elapsedSeconds = DateTime.now().difference(_backgroundStartTime!).inSeconds;
         _backgroundStartTime = null;
@@ -478,10 +476,6 @@ class _MainScreenState extends State<MainScreen>
   void _onSquatCompleted() {
     if (!mounted) return;
 
-    // Credit calculation rules based on Level:
-    // Beginner: 1 Squat = 200 Credits
-    // Intermediate: 1 Squat = 100 Credits
-    // Beast: 1 Squat = 50 Credits (2 Squats = 100 Credits)
     int awardedCredits = (level == UserLevel.beginner)
         ? 200
         : (level == UserLevel.intermediate)
@@ -516,10 +510,8 @@ class _MainScreenState extends State<MainScreen>
       _lastMagnitude = magnitude;
 
       if (delta > 14.5) {
-        _stepCount++;
-        distanceWalkedMeters += 0.75; // Average step length 0.75m
+        distanceWalkedMeters += 0.75;
 
-        // Reward every 100 meters walked
         if (distanceWalkedMeters >= 100.0) {
           int distanceMultiplier = (distanceWalkedMeters ~/ 100);
           distanceWalkedMeters %= 100.0;
@@ -531,11 +523,15 @@ class _MainScreenState extends State<MainScreen>
                   : 25;
 
           setState(() {
-            stepCount = _stepCount;
+            stepCount++;
             credits += (walkingCreditsPer100m * distanceMultiplier);
           });
           _updateStreak();
           _saveData();
+        } else {
+          setState(() {
+            stepCount++;
+          });
         }
       }
     });
@@ -747,7 +743,7 @@ class _MainScreenState extends State<MainScreen>
                 foregroundColor: BoltColors.neonCyan,
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
               ),
-              onPressed: () => setState(() => _selectedTab = 2), // Go to Store
+              onPressed: () => setState(() => _selectedTab = 2),
               child: const Text('Store', style: TextStyle(fontWeight: FontWeight.bold)),
             )
           ],
@@ -843,7 +839,7 @@ class _MainScreenState extends State<MainScreen>
             mainAxisAlignment: MainAxisAlignment.spaceEvenly,
             children: [
               _statCard('Squats', '$squatsCount', BoltColors.neonCyan, Icons.accessibility_new_rounded),
-              _statCard('Steps', '$_stepCount', BoltColors.neonGreen, Icons.directions_walk_rounded),
+              _statCard('Steps', '$stepCount', BoltColors.neonGreen, Icons.directions_walk_rounded),
             ],
           ),
           Row(
@@ -1021,7 +1017,7 @@ class _MainScreenState extends State<MainScreen>
             style: ElevatedButton.styleFrom(backgroundColor: BoltColors.electricOrange, foregroundColor: Colors.black),
             onPressed: () {
               Navigator.pop(context);
-              setState(() => _selectedTab = 2); // Store tab
+              setState(() => _selectedTab = 2);
             },
             child: const Text('Upgrade to Pro', style: TextStyle(fontWeight: FontWeight.bold)),
           ),
@@ -1047,7 +1043,6 @@ class _MainScreenState extends State<MainScreen>
               Text('Available Balance: $credits Credits', style: const TextStyle(color: BoltColors.warning, fontSize: 16, fontWeight: FontWeight.bold)),
               const SizedBox(height: 20),
 
-              // SPECIAL OFFERS SECTION
               const Row(
                 children: [
                   Icon(Icons.local_offer_rounded, color: BoltColors.electricOrange, size: 20),
@@ -1068,7 +1063,6 @@ class _MainScreenState extends State<MainScreen>
               _buildStandardRedeemTile(1000, 10),
 
               const SizedBox(height: 30),
-              // PRO TIER BANNER
               Container(
                 padding: const EdgeInsets.all(20),
                 decoration: BoxDecoration(
@@ -1192,8 +1186,6 @@ class _MainScreenState extends State<MainScreen>
   // TAB 4: ANALYTICS & APP ICON GRAPHIC
   // ------------------------------------------
   Widget _buildAnalyticsTab() {
-    // CORRECTED 10-YEAR LIFE WASTE MATH:
-    // (dailyScreenHours * 365 days * 10 years) / (24 hours * 365 days) = (dailyScreenHours * 10) / 24 YEARS
     final double wastedYearsIn10Years = (_dailyScreenHours * 10.0) / 24.0;
 
     return Container(
@@ -1207,7 +1199,6 @@ class _MainScreenState extends State<MainScreen>
               const Text('Analytics & Reality Check', style: TextStyle(fontSize: 26, fontWeight: FontWeight.bold, color: Colors.white)),
               const SizedBox(height: 16),
 
-              // CORRECTED REALITY CHECK CARD
               Container(
                 padding: const EdgeInsets.all(18),
                 decoration: BoxDecoration(
@@ -1238,7 +1229,7 @@ class _MainScreenState extends State<MainScreen>
 
               const SizedBox(height: 20),
               _analyticsRowCard('Squats Tracked', '$squatsCount reps', Icons.accessibility_new_rounded, BoltColors.neonCyan),
-              _analyticsRowCard('Total Steps', '$_stepCount steps', Icons.directions_walk_rounded, BoltColors.neonGreen),
+              _analyticsRowCard('Total Steps', '$stepCount steps', Icons.directions_walk_rounded, BoltColors.neonGreen),
               _analyticsRowCard('Scroll Allowance Unlocked', '${_allowedScrollTimeSeconds ~/ 60} mins', Icons.timer_rounded, BoltColors.warning),
 
               const SizedBox(height: 24),
@@ -1477,7 +1468,6 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
   }
 
   Widget _stepDailyScreenTime() {
-    // Corrected 10-Year Waste Calculation Formula:
     final double yearsWasted = (_screenHours * 10.0) / 24.0;
 
     return _onboardingCard(
@@ -1682,51 +1672,41 @@ class AppIconPainter extends CustomPainter {
     final double w = size.width;
     final double h = size.height;
 
-    // Outer Background Container
     final bgPaint = Paint()..color = Colors.black;
     canvas.drawRRect(RRect.fromLTRBR(0, 0, w, h, const Radius.circular(18)), bgPaint);
 
     final whitePaint = Paint()..color = Colors.white;
     final orangePaint = Paint()..color = BoltColors.electricOrange;
 
-    // 1. Center Circle Head (Push-up athlete head)
     canvas.drawCircle(Offset(w * 0.5, h * 0.32), w * 0.09, orangePaint);
 
-    // 2. Central Rectangle (Torso Plank)
     canvas.drawRRect(
       RRect.fromLTRBR(w * 0.30, h * 0.46, w * 0.70, h * 0.56, const Radius.circular(5)),
       whitePaint,
     );
 
-    // 3. Left Rectangle (Arm Support Left)
     canvas.drawRRect(
       RRect.fromLTRBR(w * 0.16, h * 0.50, w * 0.26, h * 0.60, const Radius.circular(5)),
       orangePaint,
     );
 
-    // 4. Right Rectangle (Arm Support Right)
     canvas.drawRRect(
       RRect.fromLTRBR(w * 0.74, h * 0.50, w * 0.84, h * 0.60, const Radius.circular(5)),
       orangePaint,
     );
 
-    // 5. Four Outer Edge Rectangles (Soft Edge Boundary Pillars)
-    // Top-Left Edge
     canvas.drawRRect(
       RRect.fromLTRBR(w * 0.12, h * 0.16, w * 0.24, h * 0.24, const Radius.circular(4)),
       whitePaint,
     );
-    // Top-Right Edge
     canvas.drawRRect(
       RRect.fromLTRBR(w * 0.76, h * 0.16, w * 0.88, h * 0.24, const Radius.circular(4)),
       whitePaint,
     );
-    // Bottom-Left Edge
     canvas.drawRRect(
       RRect.fromLTRBR(w * 0.12, h * 0.76, w * 0.24, h * 0.84, const Radius.circular(4)),
       orangePaint,
     );
-    // Bottom-Right Edge
     canvas.drawRRect(
       RRect.fromLTRBR(w * 0.76, h * 0.76, w * 0.88, h * 0.84, const Radius.circular(4)),
       orangePaint,
