@@ -1312,7 +1312,7 @@ class _MainScreenState extends State<MainScreen>
 
   Widget _buildAdminPanel() {
     return Container(
-      margin: const EdgeInsets.topPadding(12),
+      margin: const EdgeInsets.only(top: 12),
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
         color: BoltColors.surface,
