@@ -25,7 +25,7 @@ jobs:
 
       - run: flutter build apk --release
 
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@v4
         with:
           name: sweat-and-scroll-apk
           path: build/app/outputs/flutter-apk/app-release.apk
