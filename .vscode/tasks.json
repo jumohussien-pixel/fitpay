@@ -1,0 +1,26 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Build FitPay ARM64 Release APK",
+			"type": "shell",
+			"command": "${workspaceFolder}\\android\\gradlew.bat",
+			"args": [
+				"-p",
+				"${workspaceFolder}\\android",
+				":app:assembleRelease",
+				"-Ptarget-platform=android-arm64",
+				"--console=plain"
+			],
+			"options": {
+				"env": {
+					"JAVA_HOME": "C:\\Program Files\\Android\\Android Studio1\\jbr",
+					"FITPAY_BUILD_DIR": "C:\\FitPayBuildFinal"
+				}
+			},
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		}
+	]
+}

@@ -1,0 +1,25 @@
+name: fitpay
+description: "A new Flutter project."
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # مكتبات متوافقة تماماً مع Dart SDK 3.4.0
+  camera: ^0.10.5+9
+  shared_preferences: ^2.2.2
+  purchases_flutter: ^8.10.1
+  onesignal_flutter: ^5.2.9
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true
